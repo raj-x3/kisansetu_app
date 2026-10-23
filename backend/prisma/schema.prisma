@@ -1,0 +1,341 @@
+// ============================================================
+// DATABASE SCHEMA — Smart Agricultural Procurement Platform
+// ============================================================
+// This file is the single source of truth for every table
+// in the PostgreSQL database. Prisma reads this file and
+// generates the actual SQL tables for you — you never write
+// raw SQL by hand.
+//
+// Beginner note: think of each "model" below as one table.
+// Each line inside it is one column. Lines starting with
+// "@relation" describe a foreign key link to another table.
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- ENUMS (fixed sets of allowed values) ----------
+
+enum Role {
+  FARMER
+  OPERATOR // legacy all-in-one operator (kept so old demo logins still work)
+  ADMIN
+  MANAGER
+  GATE_OFFICER
+  DOCUMENT_OFFICER
+  QUALITY_OFFICER
+  WEIGHT_OFFICER
+  PROCUREMENT_OFFICER
+  PAYMENT_OFFICER
+}
+
+enum BookingStatus {
+  BOOKED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+enum ProcurementStage {
+  REGISTERED
+  SLOT_BOOKED
+  ARRIVED
+  VERIFIED
+  QUALITY_CHECKED
+  WEIGHED
+  COMPLETED
+}
+
+enum DocumentType {
+  IDENTITY_PROOF
+  LAND_RECORD
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  CORRECTION_REQUESTED
+}
+
+enum QualityResult {
+  ACCEPTED
+  REJECTED
+}
+
+enum PaymentStatus {
+  PENDING
+  INITIATED
+  PROCESSING
+  CREDITED
+  FAILED
+}
+
+// ---------- CORE USER TABLE ----------
+// Every login (farmer, operator, admin) is a row here.
+// Role-specific extra fields live in their own tables below,
+// linked back to this one.
+
+model User {
+  id           String   @id @default(uuid())
+  email        String?  @unique
+  mobile       String   @unique
+  passwordHash String
+  role         Role
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  farmer   Farmer?
+  operator Operator?
+
+  @@map("users")
+}
+
+model Farmer {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  user            User     @relation(fields: [userId], references: [id])
+  farmerCode      String   @unique // human-readable Farmer ID, e.g. FARM-2026-0001
+  fullName        String
+  address         String
+  district        String
+  state           String
+  preferredCentreId String?
+  preferredCentre ProcurementCentre? @relation(fields: [preferredCentreId], references: [id])
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  bookings     Booking[]
+  procurements Procurement[]
+  notifications Notification[]
+  documents     Document[]
+
+  @@map("farmers")
+}
+
+model ProcurementCentre {
+  id              String   @id @default(uuid())
+  name            String
+  location        String
+  district        String
+  state           String
+  dailyCapacity   Int      // max farmers/day this centre can serve
+  operatingStart  String   // "09:00"
+  operatingEnd    String   // "17:00"
+  numMachines     Int
+  numOperators    Int
+  avgProcessingMin Int     @default(10) // avg minutes to process one farmer
+  isActive        Boolean  @default(true)
+  currentToken    Int      @default(0) // the token number currently being served, per centre
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  slots        Slot[]
+  operators    Operator[]
+  procurements Procurement[]
+  preferredByFarmers Farmer[]
+
+  @@map("procurement_centres")
+}
+
+model Operator {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id])
+  fullName  String
+  centreId  String
+  centre    ProcurementCentre @relation(fields: [centreId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@map("operators")
+}
+
+model Slot {
+  id            String   @id @default(uuid())
+  centreId      String
+  centre        ProcurementCentre @relation(fields: [centreId], references: [id])
+  date          DateTime // just the date part is used
+  startTime     String   // "09:00"
+  endTime       String   // "09:30"
+  capacity      Int      // max farmers in this slot
+  bookedCount   Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  bookings Booking[]
+
+  @@unique([centreId, date, startTime])
+  @@map("slots")
+}
+
+model Booking {
+  id          String        @id @default(uuid())
+  farmerId    String
+  farmer      Farmer        @relation(fields: [farmerId], references: [id])
+  slotId      String
+  slot        Slot          @relation(fields: [slotId], references: [id])
+  caseId      String        @unique // e.g. CASE-2026-000047
+  tokenNumber Int
+  crop        String
+  quantityKg  Float
+  status      BookingStatus @default(BOOKED)
+  createdAt   DateTime      @default(now())
+
+  queueEntry   QueueEntry?
+  procurement  Procurement?
+  documents    Document[]
+
+  @@map("bookings")
+}
+
+model QueueEntry {
+  id         String           @id @default(uuid())
+  bookingId  String           @unique
+  booking    Booking          @relation(fields: [bookingId], references: [id])
+  stage      ProcurementStage @default(SLOT_BOOKED)
+  calledAt   DateTime?
+  updatedAt  DateTime         @updatedAt
+
+  @@map("queue_entries")
+}
+
+model QualityCheck {
+  id              String        @id @default(uuid())
+  procurementId   String        @unique
+  procurement     Procurement   @relation(fields: [procurementId], references: [id])
+  moisturePercent Float
+  foreignMatter   Float
+  qualityGrade    String
+  remarks         String?
+  result          QualityResult
+  createdAt       DateTime      @default(now())
+
+  @@map("quality_checks")
+}
+
+model Weighment {
+  id            String      @id @default(uuid())
+  procurementId String      @unique
+  procurement   Procurement @relation(fields: [procurementId], references: [id])
+  grossWeightKg Float
+  netWeightKg   Float
+  unit          String      @default("kg")
+  remarks       String?
+  createdAt     DateTime    @default(now())
+
+  @@map("weighments")
+}
+
+model Procurement {
+  id            String   @id @default(uuid())
+  bookingId     String   @unique
+  booking       Booking  @relation(fields: [bookingId], references: [id])
+  farmerId      String
+  farmer        Farmer   @relation(fields: [farmerId], references: [id])
+  centreId      String
+  centre        ProcurementCentre @relation(fields: [centreId], references: [id])
+  operatorUserId String?
+  crop          String
+  pricePerKg    Float?
+  totalAmount   Float?
+  status        ProcurementStage @default(ARRIVED)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  qualityCheck QualityCheck?
+  weighment    Weighment?
+  payment      Payment?
+
+  @@map("procurements")
+}
+
+model Payment {
+  id            String        @id @default(uuid())
+  procurementId String        @unique
+  procurement   Procurement   @relation(fields: [procurementId], references: [id])
+  amount        Float
+  status        PaymentStatus @default(PENDING)
+  updatedAt     DateTime      @updatedAt
+  createdAt     DateTime      @default(now())
+
+  @@map("payments")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  farmerId  String
+  farmer    Farmer   @relation(fields: [farmerId], references: [id])
+  message   String   // English fallback text
+  type      String   @default("generic") // e.g. "arrived" — the frontend translates by type
+  params    Json?    // values to fill into the translated text, e.g. {"token": 12}
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("notifications")
+}
+
+// A permanent record of who did what, and when. Deliberately has NO
+// foreign keys: entries must survive even if a user, booking, or centre
+// is later changed or removed. The app exposes no way to edit or delete
+// these rows.
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId String?
+  actorRole   String
+  actorName   String
+  action      String
+  bookingId   String?
+  details     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+model MlPrediction {
+  id                     String   @id @default(uuid())
+  centreId               String
+  queueLength            Int
+  activeMachines         Int
+  activeOperators        Int
+  hour                   Int
+  farmersArrived         Int
+  averageProcessingTime  Float
+  predictedWaitingMinutes Float
+  createdAt              DateTime @default(now())
+
+  @@map("ml_predictions")
+}
+
+// A document a farmer uploads for one booking (identity proof, land
+// record…). The file itself is stored in the database (`data`) rather
+// than on disk, because hosting services like Render wipe the disk on
+// every redeploy. Limit: 2 MB, PDF/JPG/PNG only (enforced in code).
+// The API never sends `data` in lists — only through the file endpoint,
+// which checks who is asking.
+model Document {
+  id               String         @id @default(uuid())
+  bookingId        String
+  booking          Booking        @relation(fields: [bookingId], references: [id])
+  farmerId         String
+  farmer           Farmer         @relation(fields: [farmerId], references: [id])
+  type             DocumentType
+  status           DocumentStatus @default(PENDING)
+  fileName         String
+  mimeType         String
+  sizeBytes        Int
+  data             Bytes
+  reviewNote       String?
+  reviewedByUserId String?
+  reviewedAt       DateTime?
+  createdAt        DateTime       @default(now())
+
+  @@index([bookingId])
+  @@map("documents")
+}

@@ -1,0 +1,19 @@
+# Never commit real secrets
+backend/.env
+ml-service/.env
+
+# Dependencies (reinstalled by the hosting platform, not stored in git)
+node_modules/
+**/node_modules/
+
+# Python virtual environment and trained model file (also regenerated on the server)
+ml-service/venv/
+ml-service/app/model/*.joblib
+**/__pycache__/
+
+# Build output (regenerated during deployment)
+backend/dist/
+frontend/dist/
+
+# OS/editor junk
+.DS_Store

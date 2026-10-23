@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* A handful of reusable, farmer-first UI patterns — big touch targets,
+   clear focus states, no tiny text. Kept centralized here instead of
+   repeated inline so every page stays visually consistent. */
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center rounded-xl bg-field px-6 py-3.5
+           text-base font-semibold text-paper shadow-sm transition
+           hover:bg-field-dark focus:outline-none focus:ring-4 focus:ring-field-light/40
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center rounded-xl border-2 border-field
+           bg-transparent px-6 py-3.5 text-base font-semibold text-field transition
+           hover:bg-field hover:text-paper focus:outline-none focus:ring-4 focus:ring-field-light/40;
+  }
+
+  .input-field {
+    @apply w-full rounded-lg border-2 border-soil-light/40 bg-white px-4 py-3
+           text-base text-soil placeholder:text-soil-light
+           focus:border-field focus:outline-none focus:ring-2 focus:ring-field-light/30;
+  }
+
+  .field-label {
+    @apply mb-1.5 block text-sm font-semibold text-soil;
+  }
+
+  .card {
+    @apply rounded-2xl border border-soil-light/20 bg-white p-6 shadow-sm;
+  }
+}
