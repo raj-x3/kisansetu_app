@@ -4,6 +4,7 @@ import {
   getTodayQueue,
   searchQueue,
   markArrived,
+  markNoShow,
   markVerified,
   submitQualityCheck,
   submitWeighing,
@@ -29,6 +30,7 @@ const ANY_OFFICER = [
 router.get("/today", authorize(...ANY_OFFICER), getTodayQueue);
 router.get("/search", authorize(...ANY_OFFICER), searchQueue);
 router.post("/arrive/:bookingId", authorize("OPERATOR", "GATE_OFFICER"), markArrived);
+router.post("/no-show/:bookingId", authorize("OPERATOR", "GATE_OFFICER", "MANAGER"), markNoShow);
 router.post("/verify/:bookingId", authorize("OPERATOR", "DOCUMENT_OFFICER"), markVerified);
 router.post("/quality-check/:bookingId", authorize("OPERATOR", "QUALITY_OFFICER"), submitQualityCheck);
 router.post("/weigh/:bookingId", authorize("OPERATOR", "WEIGHT_OFFICER"), submitWeighing);

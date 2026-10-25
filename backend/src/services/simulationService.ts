@@ -12,6 +12,7 @@
 // warning about this.
 
 import { nextCaseId } from "../utils/caseId";
+import { nextTokenNumber } from "../utils/tokenNumber";
 import { prisma } from "../utils/prismaClient";
 import { getIO } from "../socket";
 import { hashPassword } from "../utils/password";
@@ -108,11 +109,8 @@ export async function addSimulatedFarmers(centreId: string, count: number): Prom
 
       await tx.slot.update({ where: { id: openSlot.id }, data: { bookedCount: { increment: 1 } } });
 
-      // Same token-collision fix as the real booking flow — see
-      // bookingController.ts's createBooking for the full explanation.
-      const bookingsTodayAtCentre = await tx.booking.count({
-        where: { status: { not: "CANCELLED" }, slot: { centreId, date: today } },
-      });
+      // Token numbers are never reused (see utils/tokenNumber.ts).
+      const tokenNumber = await nextTokenNumber(tx, centreId, today);
 
       const caseId = await nextCaseId(tx, today.getUTCFullYear());
       const booking = await tx.booking.create({
@@ -120,7 +118,7 @@ export async function addSimulatedFarmers(centreId: string, count: number): Prom
           farmerId: user.farmer!.id,
           slotId: openSlot.id,
           caseId,
-          tokenNumber: bookingsTodayAtCentre + 1,
+          tokenNumber,
           crop: randomFrom(DEMO_CROPS),
           quantityKg: Math.round((200 + Math.random() * 800) * 10) / 10,
           status: "BOOKED",

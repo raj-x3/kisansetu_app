@@ -201,7 +201,7 @@ before redeploying on Render.
 ### Not built yet (honest list)
 Hold / reschedule states, per-role URLs (all officers share
 /officer/dashboard), a case timeline page, admin user and price
-management screens, and QR codes.
+management screens.
 
 ### Checks I could run
 No `npm install` is possible in my workspace, so I only checked syntax,
@@ -249,3 +249,79 @@ run `npx prisma migrate dev --name add_documents` instead.
 Files up to 2 MB are stored in the database, which is fine for a prototype
 but not for large scale. There is no virus scanning. A farmer can't upload a
 second file of a type that is already waiting or verified.
+
+---
+
+## ✅ Module 20: Staff login made visible + admin creates officer accounts
+
+- Officers, managers and admins log in on the normal **Log in** page. The
+  page, the top bar and the home page now say so ("Officer / Admin login").
+- Officers **cannot sign up themselves** (anyone could make themselves an
+  officer). The **admin** creates them: log in as admin, scroll to
+  **Create officer account**, enter name, mobile, role, centre and a
+  password, and give those to the officer privately.
+- No database change in this module, so no migration is needed.
+
+---
+
+## ✅ Module 21: Case timeline
+
+- **View case timeline** appears on the farmer dashboard, the farmer's
+  booking history, and every officer / operator queue row. It lists each
+  step in order: what happened, details (token, weight, amount…), when, and
+  by whom.
+- Farmers see the kind of person who acted ("Gate officer"), not their name.
+  Staff at the same centre, and admins, also see the name.
+- The server decides who may open a timeline: the farmer who owns the case,
+  staff at that centre, or an admin.
+- Also fixed: the four Simulation actions now have translated names in the
+  audit log.
+- No database change, so no migration is needed.
+
+---
+
+## ✅ Module 22: Cancel, change time, and no-show
+
+- **Farmers** (only while the case is still "Slot booked", i.e. before the
+  gate officer marks them arrived): **Change time** moves the booking to
+  another slot at the same centre, and **Cancel booking** frees the slot.
+  The farmer gets a notification and an SMS (if SMS is configured).
+- **Gate officer, Operator and Manager**: **Mark no-show** (asks to confirm)
+  for farmers who never came, on or after the booking date. The farmer is
+  removed from the live queue and told. The slot place is not given back.
+- Cancelled and no-show bookings disappear from queues, counts and wait-time
+  estimates, and show as "Cancelled" / "No-show" in the farmer's history.
+- **Token numbers are now never reused.** The old way (counting bookings)
+  could give two farmers the same token once someone cancelled.
+- All of it appears in the audit log and the case timeline.
+- No database change, so no migration is needed.
+
+Not built: putting a case "on hold", and moving to a different centre
+(cancel and book again for that).
+
+---
+
+## ✅ Module 23: QR code token
+
+- **Farmers:** on the dashboard, **Show my QR code** opens a QR code of their
+  Case ID. It also appears on the booking confirmation screen. The code holds
+  only the Case ID text, nothing personal.
+- **Officers and the Operator:** a **Find a case** box (Case ID, token, farmer
+  ID or name) and a **Scan QR** button that opens the camera and reads the
+  farmer's code.
+- No new packages and no database change. The QR generator is written inside
+  the project (`frontend/src/utils/qr.ts`), so there is nothing extra to install.
+- **Checked here:** the generated codes were drawn and read back by a QR
+  reader (all sizes, plus the exact picture a real browser draws).
+- **Not checked here:** the camera. Scanning needs Chrome on Android or on a
+  computer, and the site must be on `https://` or `localhost`. iPhone Safari
+  has no built-in QR reader, so iPhone officers type the Case ID instead. The
+  Find box works on every device.
+
+---
+
+## Going online
+`DEPLOYMENT.md` was rewritten for the current app: one start command that
+creates the tables and demo accounts (`npm run start:render`), both AI models
+trained on deploy, a page-refresh rule for the website, tolerant web-address
+(CORS) settings, and the real Render free-tier limits. Follow it step by step.

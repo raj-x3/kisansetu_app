@@ -3,6 +3,9 @@ import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "../services/api";
 import { socket } from "../services/socket";
 import { DocumentsPanel } from "../components/DocumentsPanel";
+import { TimelineModal } from "../components/TimelineModal";
+import { RescheduleModal } from "../components/RescheduleModal";
+import { QrCode } from "../components/QrCode";
 import { FarmerProfile, FarmerBooking, ProcurementStage } from "../types";
 import { ProcessChain } from "../components/ProcessChain";
 import { useLanguage } from "../context/LanguageContext";
@@ -49,6 +52,23 @@ export function FarmerDashboard() {
   const [etaLoading, setEtaLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showTimeline, setShowTimeline] = useState(false);
+  const [showReschedule, setShowReschedule] = useState(false);
+  const [showQr, setShowQr] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function cancelMyBooking() {
+    if (!booking || !window.confirm(t("booking.cancelConfirm"))) return;
+    setError(null);
+    try {
+      await api.post(`/bookings/${booking.id}/cancel`);
+      setBooking(null);
+      setQueue({ hasBooking: false } as QueuePosition);
+      setNotice(t("booking.cancelled"));
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
 
   // Load the initial state once.
   useEffect(() => {
@@ -89,6 +109,7 @@ export function FarmerDashboard() {
       centreId: string;
       bookingId: string;
       stage: string;
+      status?: string;
       qualityResult?: FarmerBooking["qualityResult"];
       netWeightKg?: number;
       totalAmount?: number;
@@ -98,6 +119,8 @@ export function FarmerDashboard() {
       if (payload.centreId !== queue?.centreId) return;
       setBooking((prev) => {
         if (!prev || prev.id !== payload.bookingId) return prev;
+        // Cancelled, or marked as a no-show by the centre: no longer an active booking.
+        if (payload.status === "NO_SHOW" || payload.status === "CANCELLED") return null;
         return {
           ...prev,
           stage: payload.stage as FarmerBooking["stage"],
@@ -293,6 +316,54 @@ export function FarmerDashboard() {
           )}
         </div>
       </div>
+
+      {notice && (
+        <div className="mt-4 rounded-lg bg-field/10 px-4 py-3 text-sm font-semibold text-field">{notice}</div>
+      )}
+
+      {booking && (
+        <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2">
+          <button className="text-sm font-semibold text-sky underline" onClick={() => setShowTimeline(true)}>
+            {t("timeline.view")}
+          </button>
+          <button className="text-sm font-semibold text-field underline" onClick={() => setShowQr((v) => !v)}>
+            {showQr ? t("qr.hide") : t("qr.show")}
+          </button>
+          {booking.stage === "SLOT_BOOKED" && (
+            <>
+              <button className="text-sm font-semibold text-field underline" onClick={() => setShowReschedule(true)}>
+                {t("booking.change")}
+              </button>
+              <button className="text-sm font-semibold text-red-600 underline" onClick={cancelMyBooking}>
+                {t("booking.cancel")}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+      {showQr && booking && (
+        <div className="mt-4 inline-block rounded-2xl border border-soil-light/20 bg-white p-4 text-center">
+          <p className="font-display text-sm font-semibold text-soil">{t("qr.title")}</p>
+          <div className="mt-3 flex justify-center">
+            <QrCode value={booking.caseId} size={180} />
+          </div>
+          <p className="mt-2 text-xs font-semibold text-soil">{booking.caseId}</p>
+          <p className="mt-1 max-w-[220px] text-xs text-soil-light">{t("qr.hint")}</p>
+        </div>
+      )}
+      {showReschedule && booking && (
+        <RescheduleModal
+          booking={booking}
+          onClose={() => setShowReschedule(false)}
+          onMoved={(u) => {
+            setBooking((prev) => (prev ? { ...prev, tokenNumber: u.tokenNumber, date: u.date, startTime: u.startTime, endTime: u.endTime } : prev));
+            api.get("/queue/my-position").then((r) => setQueue(r.data)).catch(() => undefined);
+            setShowReschedule(false);
+            setNotice(t("booking.moved"));
+          }}
+        />
+      )}
+      {showTimeline && booking && <TimelineModal bookingId={booking.id} onClose={() => setShowTimeline(false)} />}
 
       {booking && <DocumentsPanel bookingId={booking.id} stage={booking.stage} />}
 

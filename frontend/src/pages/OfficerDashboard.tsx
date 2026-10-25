@@ -11,6 +11,8 @@ import { useLanguage } from "../context/LanguageContext";
 import { QualityCheckModal } from "../components/QualityCheckModal";
 import { WeighingModal } from "../components/WeighingModal";
 import { DocumentReviewModal } from "../components/DocumentReviewModal";
+import { TimelineModal } from "../components/TimelineModal";
+import { ScanModal } from "../components/ScanModal";
 import type { OfficerRole, QueueRow } from "../types";
 
 type Action = "arrive" | "verify" | "quality" | "weigh" | "complete" | "payment";
@@ -78,6 +80,9 @@ export function OfficerDashboard() {
   const [qualityId, setQualityId] = useState<string | null>(null);
   const [weighId, setWeighId] = useState<string | null>(null);
   const [docsId, setDocsId] = useState<string | null>(null);
+  const [timelineId, setTimelineId] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
+  const [scanning, setScanning] = useState(false);
 
   const load = useCallback(() => {
     api
@@ -102,7 +107,17 @@ export function OfficerDashboard() {
 
   if (!config) return null;
 
-  const mine = rows.filter(config.show);
+  const needle = filter.trim().toLowerCase();
+  const waiting = rows.filter(config.show);
+  const mine = needle
+    ? waiting.filter(
+        (r) =>
+          r.caseId.toLowerCase().includes(needle) ||
+          String(r.tokenNumber) === needle ||
+          r.farmerName.toLowerCase().includes(needle) ||
+          r.farmerCode.toLowerCase().includes(needle)
+      )
+    : waiting;
 
   async function post(url: string, bookingId: string) {
     setBusyId(bookingId);
@@ -149,11 +164,23 @@ export function OfficerDashboard() {
         <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
-      <div className="mt-6 overflow-x-auto rounded-xl border border-soil-light/20 bg-white">
+      <div className="mt-6 flex gap-2">
+        <input
+          className="input-field"
+          placeholder={t("officer.search")}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <button type="button" className="btn-secondary whitespace-nowrap !px-4" onClick={() => setScanning(true)}>
+          {t("scan.button")}
+        </button>
+      </div>
+
+      <div className="mt-4 overflow-x-auto rounded-xl border border-soil-light/20 bg-white">
         {loading ? (
           <p className="p-6 text-sm text-soil-light">…</p>
         ) : mine.length === 0 ? (
-          <p className="p-6 text-sm text-soil-light">{t("officer.emptyQueue")}</p>
+          <p className="p-6 text-sm text-soil-light">{waiting.length > 0 ? t("officer.noMatch") : t("officer.emptyQueue")}</p>
         ) : (
           <table className="w-full text-left text-sm">
             <thead className="bg-soil-light/5 text-xs font-semibold text-soil-light">
@@ -194,6 +221,22 @@ export function OfficerDashboard() {
                       >
                         {t(ACTION_LABEL[config.action] as never)}
                       </button>
+                      <button
+                        className="text-xs font-semibold text-soil-light underline"
+                        onClick={() => setTimelineId(row.bookingId)}
+                      >
+                        {t("timeline.view")}
+                      </button>
+                      {config.action === "arrive" && (
+                        <button
+                          className="text-xs font-semibold text-red-600 underline"
+                          onClick={() => {
+                            if (window.confirm(t("officer.noShowConfirm"))) post(`/operator/no-show/${row.bookingId}`, row.bookingId);
+                          }}
+                        >
+                          {t("officer.noShow")}
+                        </button>
+                      )}
                       {config.action === "verify" && (
                         <button
                           className="text-xs font-semibold text-sky underline"
@@ -219,6 +262,16 @@ export function OfficerDashboard() {
         )}
       </div>
 
+      {scanning && (
+        <ScanModal
+          onResult={(id) => {
+            setFilter(id);
+            setScanning(false);
+          }}
+          onClose={() => setScanning(false)}
+        />
+      )}
+      {timelineId && <TimelineModal bookingId={timelineId} onClose={() => setTimelineId(null)} />}
       {docsRow && <DocumentReviewModal row={docsRow} onClose={() => setDocsId(null)} />}
       {qualityRow && (
         <QualityCheckModal

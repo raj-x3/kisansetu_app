@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "../services/api";
 import { useLanguage } from "../context/LanguageContext";
 import { FarmerBooking } from "../types";
+import { TimelineModal } from "../components/TimelineModal";
 
 const STAGE_KEY: Record<string, any> = {
   REGISTERED: "stage.registered",
@@ -25,6 +26,7 @@ const PAYMENT_KEY: Record<string, any> = {
 export function BookingHistory() {
   const { t } = useLanguage();
   const [bookings, setBookings] = useState<FarmerBooking[]>([]);
+  const [timelineId, setTimelineId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -74,12 +76,16 @@ export function BookingHistory() {
                 className={`rounded-full px-3 py-1 text-xs font-semibold ${
                   b.status === "COMPLETED"
                     ? "bg-field/10 text-field"
-                    : b.status === "CANCELLED"
+                    : b.status === "CANCELLED" || b.status === "NO_SHOW"
                     ? "bg-red-50 text-red-600"
                     : "bg-soil-light/10 text-soil"
                 }`}
               >
-                {t(STAGE_KEY[b.stage] ?? "stage.slotBooked")}
+                {b.status === "CANCELLED"
+                  ? t("booking.statusCancelled")
+                  : b.status === "NO_SHOW"
+                  ? t("booking.statusNoShow")
+                  : t(STAGE_KEY[b.stage] ?? "stage.slotBooked")}
               </span>
             </div>
 
@@ -105,9 +111,16 @@ export function BookingHistory() {
                 )}
               </div>
             )}
+            <button
+              className="mt-3 text-xs font-semibold text-sky underline"
+              onClick={() => setTimelineId(b.id)}
+            >
+              {t("timeline.view")}
+            </button>
           </div>
         ))}
       </div>
+    {timelineId && <TimelineModal bookingId={timelineId} onClose={() => setTimelineId(null)} />}
     </div>
   );
 }

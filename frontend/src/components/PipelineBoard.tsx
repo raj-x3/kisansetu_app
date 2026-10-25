@@ -23,6 +23,18 @@ export function PipelineBoard() {
   const [rows, setRows] = useState<QueueRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
+
+  async function markNoShow(bookingId: string) {
+    if (!window.confirm(t("officer.noShowConfirm"))) return;
+    setError(null);
+    try {
+      await api.post(`/operator/no-show/${bookingId}`);
+      setReloadTick((n) => n + 1);
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  }
 
   useEffect(() => {
     let centreId: string | null = null;
@@ -50,7 +62,7 @@ export function PipelineBoard() {
       socket.off("stage-updated", load);
       socket.off("payment-updated", load);
     };
-  }, []);
+  }, [reloadTick]);
 
   const inStage = (key: string) => rows.filter((r) => r.stage === key);
   const selectedRows = selected ? inStage(selected) : [];
@@ -90,6 +102,13 @@ export function PipelineBoard() {
                     <td className="px-3 py-2 text-soil">{r.farmerName}</td>
                     <td className="px-3 py-2 text-soil-light">
                       {r.crop} · {r.quantityKg} kg
+                    </td>
+                    <td className="px-3 py-2">
+                      {selected === "SLOT_BOOKED" && (
+                        <button className="text-xs font-semibold text-red-600 underline" onClick={() => markNoShow(r.bookingId)}>
+                          {t("officer.noShow")}
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

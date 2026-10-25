@@ -38,7 +38,7 @@ export async function getTodayQueue(req: Request, res: Response) {
   // whole day's queue after finishing some of it, not have people
   // disappear the moment they're done.
   const bookings = await prisma.booking.findMany({
-    where: { status: { not: "CANCELLED" }, slot: { centreId, date: startOfToday() } },
+    where: { status: { notIn: ["CANCELLED", "NO_SHOW"] }, slot: { centreId, date: startOfToday() } },
     include: {
       farmer: true,
       queueEntry: true,
@@ -92,7 +92,7 @@ export async function searchQueue(req: Request, res: Response) {
 
   const bookings = await prisma.booking.findMany({
     where: {
-      status: { not: "CANCELLED" }, // same reasoning as getTodayQueue above
+      status: { notIn: ["CANCELLED", "NO_SHOW"] }, // same reasoning as getTodayQueue above
       slot: { centreId, date: startOfToday() },
       OR: [
         ...(Number.isFinite(tokenAsNumber) ? [{ tokenNumber: tokenAsNumber }] : []),
@@ -158,6 +158,9 @@ async function advanceStage(
   if (!booking.queueEntry) {
     return res.status(400).json({ error: "This booking has no queue entry." });
   }
+  if (booking.status !== "BOOKED") {
+    return res.status(409).json({ error: "This booking was cancelled or marked as a no-show." });
+  }
   if (booking.queueEntry.stage !== requiredCurrentStage) {
     return res.status(409).json({
       error: `This farmer's status is "${booking.queueEntry.stage}" — they must be "${requiredCurrentStage}" first.`,
@@ -198,6 +201,65 @@ async function advanceStage(
 
 export async function markArrived(req: Request, res: Response) {
   return advanceStage(req, res, "SLOT_BOOKED", "ARRIVED");
+}
+
+// A farmer who never came. Only for bookings whose day has arrived, and
+// only while they are still at "Slot booked". The booking leaves the live
+// queue but stays in the history and audit log. The slot place is NOT
+// given back, because the time really was reserved and unused.
+export async function markNoShow(req: Request, res: Response) {
+  try {
+    const centreId = await getOperatorCentreId(req.user!.userId);
+    if (!centreId) return res.status(404).json({ error: "Operator profile not found." });
+
+    const booking = await prisma.booking.findUnique({
+      where: { id: req.params.bookingId },
+      include: { slot: true, queueEntry: true },
+    });
+    if (!booking || booking.slot.centreId !== centreId) {
+      return res.status(404).json({ error: "Booking not found at your centre." });
+    }
+    if (booking.status !== "BOOKED") {
+      return res.status(409).json({ error: "This booking is no longer active." });
+    }
+    if ((booking.queueEntry?.stage ?? "SLOT_BOOKED") !== "SLOT_BOOKED") {
+      return res.status(409).json({ error: "This farmer has already arrived, so they can't be marked as a no-show." });
+    }
+    if (booking.slot.date > startOfToday()) {
+      return res.status(409).json({ error: "A no-show can only be recorded on or after the booking date." });
+    }
+
+    const changed = await prisma.booking.updateMany({
+      where: { id: booking.id, status: "BOOKED" },
+      data: { status: "NO_SHOW" },
+    });
+    if (changed.count === 0) return res.status(409).json({ error: "This booking is no longer active." });
+
+    await logAudit({ userId: req.user!.userId, role: req.user!.role }, "MARK_NO_SHOW", {
+      bookingId: booking.id,
+      details: { token: booking.tokenNumber },
+    });
+    await notifyFarmer(
+      booking.farmerId,
+      "noShow",
+      `You were marked as not arrived for token ${booking.tokenNumber}.`,
+      { token: booking.tokenNumber }
+    );
+    try {
+      getIO().to(`centre:${centreId}`).emit("stage-updated", {
+        centreId,
+        bookingId: booking.id,
+        stage: "SLOT_BOOKED",
+        status: "NO_SHOW",
+      });
+    } catch {
+      /* live update is a bonus */
+    }
+    return res.json({ message: "Marked as no-show." });
+  } catch (err) {
+    console.error("markNoShow failed:", err);
+    return res.status(500).json({ error: "Could not record the no-show. Please try again." });
+  }
 }
 
 export async function markVerified(req: Request, res: Response) {

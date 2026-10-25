@@ -10,6 +10,9 @@ import { prisma } from "../utils/prismaClient";
 
 export type AuditAction =
   | "BOOKING_CREATE"
+  | "BOOKING_CANCEL"
+  | "BOOKING_RESCHEDULE"
+  | "MARK_NO_SHOW"
   | "CALL_NEXT"
   | "MARK_ARRIVED"
   | "MARK_VERIFIED"

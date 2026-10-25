@@ -38,6 +38,7 @@ export type ProcurementStage =
 export interface FarmerBooking {
   id: string;
   caseId: string;
+  centreId: string;
   tokenNumber: number;
   crop: string;
   quantityKg: number;

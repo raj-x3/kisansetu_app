@@ -39,7 +39,7 @@ export async function predictMyEta(req: Request, res: Response) {
   // Demand/activity signal for the ETA model — should reflect the
   // day's real booking volume, not just who's still mid-workflow.
   const totalArrivedToday = await prisma.booking.count({
-    where: { status: { not: "CANCELLED" }, slot: { centreId: centre.id, date: booking.slot.date } },
+    where: { status: { notIn: ["CANCELLED", "NO_SHOW"] }, slot: { centreId: centre.id, date: booking.slot.date } },
   });
 
   const features = {

@@ -10,7 +10,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "start:render": "prisma db push && ts-node --transpile-only prisma/seed.ts && ts-node --transpile-only src/server.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

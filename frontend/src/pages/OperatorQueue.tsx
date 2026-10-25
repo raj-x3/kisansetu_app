@@ -4,6 +4,8 @@ import { useLanguage } from "../context/LanguageContext";
 import { QualityCheckModal } from "../components/QualityCheckModal";
 import { WeighingModal } from "../components/WeighingModal";
 import type { QueueRow } from "../types";
+import { TimelineModal } from "../components/TimelineModal";
+import { ScanModal } from "../components/ScanModal";
 
 const PAYMENT_LABEL_KEY: Record<string, any> = {
   PENDING: "payment.pending",
@@ -54,6 +56,8 @@ export function OperatorQueue() {
   const [qualityFormBookingId, setQualityFormBookingId] = useState<string | null>(null);
   const [weighFormBookingId, setWeighFormBookingId] = useState<string | null>(null);
   const [completingId, setCompletingId] = useState<string | null>(null);
+  const [timelineId, setTimelineId] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
 
   function loadToday() {
     setLoading(true);
@@ -107,7 +111,7 @@ export function OperatorQueue() {
     }
   }
 
-  async function handleAction(bookingId: string, action: "arrive" | "verify") {
+  async function handleAction(bookingId: string, action: "arrive" | "verify" | "no-show") {
     setActionLoadingId(bookingId);
     setError(null);
     try {
@@ -174,13 +178,16 @@ export function OperatorQueue() {
         <SummaryCard label={t("operator.verified")} value={summary?.verified ?? "—"} />
       </div>
 
-      <div className="mt-6">
+      <div className="mt-6 flex gap-2">
         <input
           className="input-field"
           placeholder={t("operator.searchPlaceholder")}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <button type="button" className="btn-secondary whitespace-nowrap !px-4" onClick={() => setScanning(true)}>
+          {t("scan.button")}
+        </button>
       </div>
 
       <div className="mt-4 overflow-x-auto rounded-xl border border-soil-light/20 bg-white">
@@ -209,6 +216,9 @@ export function OperatorQueue() {
                     <div className="font-medium text-soil">{row.farmerName}</div>
                     <div className="text-xs text-soil-light">{row.farmerCode}</div>
                     <div className="text-xs text-soil-light">{row.caseId}</div>
+                    <button className="text-xs font-semibold text-sky underline" onClick={() => setTimelineId(row.bookingId)}>
+                      {t("timeline.view")}
+                    </button>
                   </td>
                   <td className="px-4 py-3 text-soil-light">
                     {row.crop} · {row.quantityKg} kg
@@ -256,6 +266,16 @@ export function OperatorQueue() {
                         disabled={actionLoadingId === row.bookingId}
                       >
                         {t("operator.markArrived")}
+                      </button>
+                    )}
+                    {row.stage === "SLOT_BOOKED" && (
+                      <button
+                        className="mt-1 block text-xs font-semibold text-red-600 underline"
+                        onClick={() => {
+                          if (window.confirm(t("officer.noShowConfirm"))) handleAction(row.bookingId, "no-show");
+                        }}
+                      >
+                        {t("officer.noShow")}
                       </button>
                     )}
                     {row.stage === "ARRIVED" && (
@@ -328,6 +348,17 @@ export function OperatorQueue() {
           </table>
         )}
       </div>
+
+      {scanning && (
+        <ScanModal
+          onResult={(id) => {
+            setQuery(id);
+            setScanning(false);
+          }}
+          onClose={() => setScanning(false)}
+        />
+      )}
+      {timelineId && <TimelineModal bookingId={timelineId} onClose={() => setTimelineId(null)} />}
 
       {qualityFormRow && (
         <QualityCheckModal

@@ -1,3 +1,4 @@
+import { QrCode } from "../components/QrCode";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, getErrorMessage } from "../services/api";
@@ -120,6 +121,10 @@ export function SlotBooking() {
             <p className="mt-2 text-xs text-soil-light">
               {t("case.id")}: <span className="font-semibold text-soil">{confirmation.caseId}</span>
             </p>
+            <div className="mt-3 flex justify-center">
+              <QrCode value={confirmation.caseId} size={140} />
+            </div>
+            <p className="mt-2 px-4 text-xs text-soil-light">{t("qr.hint")}</p>
           </div>
 
           <dl className="mt-6 space-y-2 text-left text-sm">

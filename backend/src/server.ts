@@ -11,6 +11,7 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import { initSocket } from "./socket";
+import { allowedOrigins } from "./utils/origins";
 
 import authRoutes from "./routes/authRoutes";
 import farmerRoutes from "./routes/farmerRoutes";
@@ -24,6 +25,7 @@ import operatorRoutes from "./routes/operatorRoutes";
 import adminRoutes from "./routes/adminRoutes";
 import notificationRoutes from "./routes/notificationRoutes";
 import documentRoutes from "./routes/documentRoutes";
+import caseRoutes from "./routes/caseRoutes";
 
 const app = express();
 const server = http.createServer(app);
@@ -32,7 +34,7 @@ const server = http.createServer(app);
 // updates and normal API requests share one port.
 initSocket(server);
 
-app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:5173" }));
+app.use(cors({ origin: allowedOrigins() }));
 // 4 MB so a 2 MB document (sent as base64 text, ~33% bigger) fits.
 app.use(express.json({ limit: "4mb" }));
 
@@ -58,6 +60,7 @@ app.use("/api/operator", operatorRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/documents", documentRoutes);
+app.use("/api/cases", caseRoutes);
 
 // --- 404 handler: any URL that doesn't match a route above ---
 app.use((req, res) => {
@@ -73,5 +76,5 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
-  console.log(`Backend API running at http://localhost:${PORT}`);
+  console.log(`Backend API running on port ${PORT}`);
 });

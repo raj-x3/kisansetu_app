@@ -27,7 +27,10 @@ export type NotificationType =
   | "paymentFailed"
   | "yourTurn"
   | "approaching"
-  | "documentReviewed";
+  | "documentReviewed"
+  | "bookingCancelled"
+  | "bookingRescheduled"
+  | "noShow";
 
 export async function notifyFarmer(
   farmerId: string,

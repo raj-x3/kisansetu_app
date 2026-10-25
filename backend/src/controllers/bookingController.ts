@@ -4,6 +4,7 @@
 // last spot in a slot at the same moment.
 
 import { nextCaseId } from "../utils/caseId";
+import { nextTokenNumber } from "../utils/tokenNumber";
 import { Request, Response } from "express";
 import { z } from "zod";
 import { prisma } from "../utils/prismaClient";
@@ -11,6 +12,7 @@ import { sendSms } from "../services/smsService";
 import { logAudit } from "../services/auditService";
 import { notifyFarmer } from "../services/notificationService";
 import { formatBillReference } from "../utils/billReference";
+import { getIO } from "../socket";
 
 const bookingSchema = z.object({
   slotId: z.string().uuid("A valid slot must be selected."),
@@ -60,18 +62,9 @@ export async function createBooking(req: Request, res: Response) {
         data: { bookedCount: { increment: 1 } },
       });
 
-      // 5. Generate a token number: sequential per centre, per day.
-      // Counts every booking made today regardless of how it later
-      // resolved (including COMPLETED) — token numbers must stay
-      // permanently unique for the day, or a later booking could be
-      // issued a token that collides with an earlier, now-finished one.
-      const bookingsTodayAtCentre = await tx.booking.count({
-        where: {
-          status: { not: "CANCELLED" },
-          slot: { centreId: slot.centreId, date: slot.date },
-        },
-      });
-      const tokenNumber = bookingsTodayAtCentre + 1;
+      // 5. Generate a token number: sequential per centre, per day, and
+      // never reused (see utils/tokenNumber.ts).
+      const tokenNumber = await nextTokenNumber(tx, slot.centreId, slot.date);
 
       // 6. Store the booking (with its formal Case ID) and start its queue entry.
       const caseId = await nextCaseId(tx, slot.date.getUTCFullYear());
@@ -178,4 +171,174 @@ export async function getMyBookings(req: Request, res: Response) {
       paymentStatus: b.procurement?.payment?.status ?? null,
     }))
   );
+}
+
+// ---------- Cancel and reschedule ----------
+// A farmer can cancel or move a booking only while it is still at
+// "Slot booked" — once the gate officer has marked them arrived, the
+// case is in progress and only the centre staff can act on it.
+
+function todayUtc(): Date {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+async function loadOwnActiveBooking(userId: string, bookingId: string) {
+  const farmer = await prisma.farmer.findUnique({ where: { userId }, include: { user: true } });
+  if (!farmer) return { error: { code: 404, message: "Farmer profile not found." } } as const;
+  const booking = await prisma.booking.findUnique({
+    where: { id: bookingId },
+    include: { slot: { include: { centre: true } }, queueEntry: true },
+  });
+  if (!booking || booking.farmerId !== farmer.id) return { error: { code: 404, message: "Booking not found." } } as const;
+  if (booking.status !== "BOOKED") {
+    return { error: { code: 409, message: "This booking is no longer active." } } as const;
+  }
+  if ((booking.queueEntry?.stage ?? "SLOT_BOOKED") !== "SLOT_BOOKED") {
+    return {
+      error: { code: 409, message: "You have already arrived at the centre, so this booking can no longer be changed." },
+    } as const;
+  }
+  return { farmer, booking } as const;
+}
+
+export async function cancelBooking(req: Request, res: Response) {
+  try {
+    const found = await loadOwnActiveBooking(req.user!.userId, req.params.id);
+    if ("error" in found) return res.status(found.error.code).json({ error: found.error.message });
+    const { farmer, booking } = found;
+
+    await prisma.$transaction(async (tx) => {
+      // Guarded updates: if the officer marked the farmer arrived a moment ago,
+      // nothing changes and we report it instead of cancelling a case in progress.
+      const stage = await tx.queueEntry.findUnique({ where: { bookingId: booking.id }, select: { stage: true } });
+      if (stage && stage.stage !== "SLOT_BOOKED") throw new Error("You have already arrived at the centre.");
+      const changed = await tx.booking.updateMany({
+        where: { id: booking.id, status: "BOOKED" },
+        data: { status: "CANCELLED" },
+      });
+      if (changed.count === 0) throw new Error("This booking is no longer active.");
+      await tx.slot.updateMany({
+        where: { id: booking.slotId, bookedCount: { gt: 0 } },
+        data: { bookedCount: { decrement: 1 } },
+      });
+    });
+
+    await logAudit({ userId: req.user!.userId, role: req.user!.role }, "BOOKING_CANCEL", {
+      bookingId: booking.id,
+      details: { token: booking.tokenNumber },
+    });
+    await notifyFarmer(
+      farmer.id,
+      "bookingCancelled",
+      `Your booking (token ${booking.tokenNumber}) was cancelled.`,
+      { token: booking.tokenNumber }
+    );
+    sendSms(farmer.user.mobile, `Your booking at ${booking.slot.centre.name} (token ${booking.tokenNumber}) was cancelled.`);
+    try {
+      getIO().to(`centre:${booking.slot.centreId}`).emit("stage-updated", {
+        centreId: booking.slot.centreId,
+        bookingId: booking.id,
+        stage: "SLOT_BOOKED",
+        status: "CANCELLED",
+      });
+    } catch {
+      /* live update is a bonus — never block the cancel */
+    }
+    return res.json({ message: "Booking cancelled." });
+  } catch (err) {
+    return res.status(409).json({ error: err instanceof Error ? err.message : "Could not cancel the booking." });
+  }
+}
+
+const rescheduleSchema = z.object({ slotId: z.string().uuid("Please choose a new slot.") });
+
+export async function rescheduleBooking(req: Request, res: Response) {
+  try {
+    const parsed = rescheduleSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.errors[0].message });
+
+    const found = await loadOwnActiveBooking(req.user!.userId, req.params.id);
+    if ("error" in found) return res.status(found.error.code).json({ error: found.error.message });
+    const { farmer, booking } = found;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const newSlot = await tx.slot.findUnique({ where: { id: parsed.data.slotId } });
+      if (!newSlot) throw new Error("This slot no longer exists.");
+      if (newSlot.id === booking.slotId) throw new Error("This is already your slot. Please choose a different one.");
+      // Same centre only: moving centres would also change the queue you are in.
+      if (newSlot.centreId !== booking.slot.centreId) {
+        throw new Error("You can only move to another time at the same centre. To change centre, cancel and book again.");
+      }
+      if (newSlot.date < todayUtc()) throw new Error("You can't move a booking to a past date.");
+      if (newSlot.bookedCount >= newSlot.capacity) throw new Error("This slot is full. Please choose a different time.");
+
+      const sameDay = await tx.booking.findFirst({
+        where: { farmerId: farmer.id, status: "BOOKED", id: { not: booking.id }, slot: { date: newSlot.date } },
+      });
+      if (sameDay) throw new Error("You already have another active booking on that date.");
+
+      // Take the new place first, then free the old one.
+      const taken = await tx.slot.updateMany({
+        where: { id: newSlot.id, bookedCount: { lt: newSlot.capacity } },
+        data: { bookedCount: { increment: 1 } },
+      });
+      if (taken.count === 0) throw new Error("This slot just became full. Please choose a different time.");
+      await tx.slot.updateMany({
+        where: { id: booking.slotId, bookedCount: { gt: 0 } },
+        data: { bookedCount: { decrement: 1 } },
+      });
+
+      // Token numbers belong to a centre and a day: same day keeps the
+      // token, a different day gets the next free token for that day.
+      const sameDate = newSlot.date.getTime() === booking.slot.date.getTime();
+      const tokenNumber = sameDate ? booking.tokenNumber : await nextTokenNumber(tx, newSlot.centreId, newSlot.date);
+
+      const updated = await tx.booking.update({
+        where: { id: booking.id },
+        data: { slotId: newSlot.id, tokenNumber },
+      });
+      return { updated, newSlot };
+    });
+
+    await logAudit({ userId: req.user!.userId, role: req.user!.role }, "BOOKING_RESCHEDULE", {
+      bookingId: booking.id,
+      details: { token: result.updated.tokenNumber },
+    });
+    const when = `${new Date(result.newSlot.date).toLocaleDateString("en-IN")} ${result.newSlot.startTime}-${result.newSlot.endTime}`;
+    await notifyFarmer(
+      farmer.id,
+      "bookingRescheduled",
+      `Your booking was moved to ${when}. Token ${result.updated.tokenNumber}.`,
+      { token: result.updated.tokenNumber, when }
+    );
+    sendSms(
+      farmer.user.mobile,
+      `Your booking at ${booking.slot.centre.name} was moved to ${when}. Your token: ${result.updated.tokenNumber}.`
+    );
+    try {
+      getIO().to(`centre:${booking.slot.centreId}`).emit("stage-updated", {
+        centreId: booking.slot.centreId,
+        bookingId: booking.id,
+        stage: "SLOT_BOOKED",
+        status: "BOOKED",
+      });
+    } catch {
+      /* live update is a bonus */
+    }
+    return res.json({
+      message: "Booking moved.",
+      booking: {
+        id: booking.id,
+        caseId: booking.caseId,
+        tokenNumber: result.updated.tokenNumber,
+        date: result.newSlot.date,
+        startTime: result.newSlot.startTime,
+        endTime: result.newSlot.endTime,
+      },
+    });
+  } catch (err) {
+    return res.status(409).json({ error: err instanceof Error ? err.message : "Could not move the booking." });
+  }
 }

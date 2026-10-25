@@ -58,7 +58,7 @@ async function resolveMatchingBookingIds(f: AnalyticsFilters): Promise<string[]>
 
   const bookings = await prisma.booking.findMany({
     where: {
-      status: { not: "CANCELLED" },
+      status: { notIn: ["CANCELLED", "NO_SHOW"] },
       ...(f.crop ? { crop: f.crop } : {}),
       ...(f.district ? { farmer: { district: f.district } } : {}),
       ...(f.centreId || dateFilter
@@ -114,7 +114,7 @@ export async function getAnalytics(req: Request, res: Response) {
     prisma.procurementCentre.count({ where: { isActive: true } }),
     filtering
       ? prisma.booking.count({ where: { id: { in: bookingIds! } } })
-      : prisma.booking.count({ where: { status: { not: "CANCELLED" }, slot: { date: today } } }),
+      : prisma.booking.count({ where: { status: { notIn: ["CANCELLED", "NO_SHOW"] }, slot: { date: today } } }),
     // Deliberately NEVER filtered — this is "how many people are
     // physically waiting right now," a live operational number, not a
     // historical report figure that a date range should be able to change.
@@ -288,7 +288,7 @@ async function forecastAllCentres(): Promise<CentreForecast[]> {
     // bookings that happen to still be mid-workflow.
     const recentBookingCount = await prisma.booking.count({
       where: {
-        status: { not: "CANCELLED" },
+        status: { notIn: ["CANCELLED", "NO_SHOW"] },
         slot: { centreId: centre.id, date: { gte: sevenDaysAgo, lt: today } },
       },
     });
@@ -349,7 +349,7 @@ export async function getInsights(_req: Request, res: Response) {
     // Same reasoning as recentBookingCount above — a fully-processed
     // busy day should still register as busy for congestion purposes.
     const todaysCount = await prisma.booking.count({
-      where: { status: { not: "CANCELLED" }, slot: { centreId: centre.id, date: today } },
+      where: { status: { notIn: ["CANCELLED", "NO_SHOW"] }, slot: { centreId: centre.id, date: today } },
     });
     const utilization = todaysCount / Math.max(centre.dailyCapacity, 1);
     if (utilization >= 0.9) {

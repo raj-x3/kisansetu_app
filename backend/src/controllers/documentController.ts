@@ -82,7 +82,7 @@ export async function uploadDocument(req: Request, res: Response) {
     if (!access.ok || !access.booking) return res.status(404).json({ error: "Booking not found." });
     const booking = access.booking;
 
-    if (booking.status === "CANCELLED") {
+    if (booking.status === "CANCELLED" || booking.status === "NO_SHOW") {
       return res.status(409).json({ error: "This booking was cancelled." });
     }
     if (!["SLOT_BOOKED", "ARRIVED"].includes(booking.queueStage)) {

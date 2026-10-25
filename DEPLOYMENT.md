@@ -1,147 +1,173 @@
-# Deploying Kisan Procurement Setu Online
+# Putting Kisan Procurement Setu Online (Render)
 
-Your app has **four separate pieces**, and each needs to actually run
-somewhere on the internet — not just live in a folder on your laptop:
-1. The **frontend** (what people see in Chrome)
-2. The **backend** (the API + real-time queue server)
-3. The **database** (PostgreSQL)
-4. The **ML service** (the Python AI ETA predictor)
+Your app is four pieces, and each must run on the internet:
 
-We'll host all four on **Render** (render.com) — one free account, one
-dashboard, and it supports Node, Python, PostgreSQL, and WebSockets
-(needed for the live queue), so you're not juggling four different
-services from four different companies.
+| Piece | What it is | Render type |
+|---|---|---|
+| Database | PostgreSQL, stores everything | PostgreSQL |
+| Backend | The server and live queue | Web Service |
+| AI service | Python wait-time and demand model | Web Service |
+| Website | What people open in Chrome | Static Site |
 
-**Heads-up on the free tier:** Render's free web services "sleep" after
-15 minutes of no traffic, and take ~30–60 seconds to wake back up on the
-next request. Fine for a demo/SIH judge visit; not fine for 24/7 real
-traffic — that would need a small paid plan later.
+## Read this first: the free-tier limits (checked on Render's own page)
 
----
+- **The free database expires 30 days after you create it.** After that you
+  get 14 days to upgrade before it is deleted. Only one free database is
+  allowed per account. Fine for an SIH demo; for anything longer, upgrade it
+  or move to another database host later.
+- **Free web services go to sleep after 15 minutes without visitors** and take
+  about a minute to wake up. Open the site once before a demo to wake it.
+- Free web services share **750 hours per month** across your account.
+- Free web services have **no shell and no console**. That is why this guide
+  makes the backend create its tables and demo accounts by itself each time
+  it starts.
+- SMS: the free tier blocks the outgoing ports 25, 465 and 587. Fast2SMS uses
+  normal web requests (port 443), so SMS still works.
 
-## Step 0 — Put your code on GitHub
-
-Render deploys by pulling your code from a GitHub repository, so this
-has to happen first.
-
-1. If you don't have one, create a free account at **github.com**.
-2. Install Git if you don't have it: run `git --version` in a terminal —
-   if that fails, download it from **git-scm.com**.
-3. In your project's root folder (the one containing `backend`,
-   `frontend`, `ml-service`), run:
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   ```
-4. On GitHub, click **New repository**, name it (e.g.
-   `kisan-procurement-setu`), leave it empty (no README), and create it.
-5. GitHub will show you commands like this — run them exactly as shown:
-   ```bash
-   git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
-   git branch -M main
-   git push -u origin main
-   ```
-
-Your code (minus `.env`, `node_modules`, and other ignored files — see
-`.gitignore`) is now on GitHub.
+Source: https://render.com/docs/free
 
 ---
 
-## Step 1 — Create the database on Render
+## Step 1: Put the latest code on GitHub
 
-1. Sign up at **render.com** (you can sign up directly with GitHub).
-2. Click **New +** → **PostgreSQL**.
-3. Give it a name (e.g. `agri-procurement-db`), leave the rest default,
-   click **Create Database**.
-4. Once it's ready, copy the **Internal Database URL** shown on its
-   page — you'll paste this into the backend in Step 2.
+Do this in the **newest project folder** (the one with `backend`, `frontend`,
+`ml-service`). The `.env` file is private and is never uploaded
+(`.gitignore` blocks it).
 
----
+```bash
+git init
+git add .
+git commit -m "Latest version"
+git branch -M main
+git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
+git push -u origin main --force
+```
 
-## Step 2 — Deploy the backend
+`--force` replaces the older copy on GitHub with this one. That is what you
+want here. When it asks for a password, paste your GitHub **Personal Access
+Token**, not your GitHub password.
 
-1. Click **New +** → **Web Service**, connect your GitHub repo.
-2. Set:
-   - **Root Directory:** `backend`
-   - **Build Command:** `npm install && npx prisma generate && npm run build`
-   - **Start Command:** `npx prisma migrate deploy && npm run seed && npm start`
-3. Under **Environment Variables**, add each of these (same names as
-   your local `.env`):
-   - `DATABASE_URL` → paste the Internal Database URL from Step 1
-   - `JWT_SECRET` → any long random string
-   - `JWT_EXPIRES_IN` → `7d`
-   - `PORT` → `4000` (Render sets its own PORT automatically too — this
-     is a fallback your code already handles)
-   - `GEMINI_API_KEY` → your key (optional — chatbot just won't work without it)
-   - `FAST2SMS_API_KEY` → your key (optional — SMS just won't send without it)
-   - `FRONTEND_URL` → leave a placeholder for now (e.g. `http://localhost:5173`)
-     — you'll come back and fix this in Step 4
-   - `ML_SERVICE_URL` → leave a placeholder for now too — fixed in Step 4
-4. Click **Create Web Service**. Wait for it to build and deploy — note
-   the URL Render gives it, something like
-   `https://agri-procurement-backend.onrender.com`.
+Check that the private file did not go up: run `git ls-files | grep env`. It
+must show only `backend/.env.example`.
 
----
+## Step 2: Create a fresh database
 
-## Step 3 — Deploy the ML service
+If you made a database on Render before, delete it first (it was built for
+an older version of the app), then:
 
-1. Click **New +** → **Web Service** again, same repo.
-2. Set:
-   - **Root Directory:** `ml-service`
-   - **Runtime:** Python 3
-   - **Build Command:** `pip install -r requirements.txt && python app/train.py`
-   - **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-3. No environment variables needed here.
-4. Deploy, and note this URL too, e.g.
-   `https://agri-procurement-ml.onrender.com`.
+1. Render dashboard → **New +** → **PostgreSQL**.
+2. Name `agri-procurement-db`, plan **Free**, **Create Database**.
+3. When it is ready, copy the **Internal Database URL** from its page.
 
----
+## Step 3: The backend (Web Service)
 
-## Step 4 — Deploy the frontend
+Create it (**New +** → **Web Service** → your repo), or open your existing one
+→ **Settings** and change these:
 
-1. Click **New +** → **Static Site**, same repo.
-2. Set:
-   - **Root Directory:** `frontend`
-   - **Build Command:** `npm install && npm run build`
-   - **Publish Directory:** `dist`
-3. Add an environment variable:
-   - `VITE_API_URL` → your backend URL from Step 2, plus `/api` at the
-     end, e.g. `https://agri-procurement-backend.onrender.com/api`
-4. Deploy, and note this URL, e.g.
-   `https://agri-procurement-frontend.onrender.com`.
+- **Root Directory:** `backend`
+- **Runtime:** Node
+- **Build Command:** `npm install && npx prisma generate`
+- **Start Command:** `npm run start:render`
+- **Instance type:** Free
 
----
+This start command creates the tables, adds the demo accounts and centres, and
+starts the server, every time. It is safe to repeat.
 
-## Step 5 — Go back and fix the placeholder URLs
+**Environment** (add each one):
 
-Now that everything has a real address:
+| Name | Value |
+|---|---|
+| `DATABASE_URL` | the Internal Database URL from Step 2 |
+| `JWT_SECRET` | a long random string. Do **not** reuse your local one |
+| `JWT_EXPIRES_IN` | `7d` |
+| `NODE_VERSION` | `20` |
+| `FRONTEND_URL` | `http://localhost:5173` for now (fixed in Step 6) |
+| `ML_SERVICE_URL` | `http://localhost:8000` for now (fixed in Step 6) |
+| `REQUIRE_DOCUMENTS` | `false` |
+| `GEMINI_API_KEY` | optional, your chatbot key |
+| `FAST2SMS_API_KEY` | optional, your SMS key |
 
-1. Go back to your **backend** service on Render → **Environment**.
-2. Update `FRONTEND_URL` to your real frontend URL from Step 4.
-3. Update `ML_SERVICE_URL` to your real ML service URL from Step 3.
-4. Save — Render will automatically redeploy the backend with these
-   corrected values.
+Do **not** add `NODE_ENV=production`. The start command needs the tools that
+are installed in a normal build.
 
-This step exists because of a chicken-and-egg problem: the backend
-needs to know the frontend's URL (for CORS) and the ML service's URL,
-but those URLs don't exist until after you deploy them.
+Open the service's **URL** plus `/api/health`. It should show `{"status":"ok"}`.
 
----
+## Step 4: The AI service (Web Service)
 
-## Step 6 — Test it
+- **Root Directory:** `ml-service`
+- **Runtime:** Python 3
+- **Build Command:**
+  `pip install -r requirements.txt && python app/train.py && python app/demand_train.py`
+- **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+- **Environment:** `PYTHON_VERSION` = `3.11.9` (the pinned libraries do not
+  support the newest Python)
+- **Instance type:** Free
 
-Open your frontend URL in Chrome. Register a farmer, book a slot, open
-the chatbot — everything should work exactly like it did on localhost,
-just live on the internet now. The very first request after a period of
-inactivity may take up to a minute (that's the free tier "waking up" —
-not a bug).
+Both training commands matter: one makes the wait-time model, the other the
+demand-forecast model.
 
----
+## Step 5: The website (Static Site)
+
+**New +** → **Static Site** → your repo:
+
+- **Root Directory:** `frontend`
+- **Build Command:** `npm install && npx vite build`
+- **Publish Directory:** `dist`
+- **Environment:** `VITE_API_URL` = your backend URL + `/api`, for example
+  `https://agri-procurement-backend.onrender.com/api`
+  (no slash at the end, and it must include `/api`)
+
+Then open the site's **Redirects/Rewrites** tab and add one rule:
+
+- **Source:** `/*`
+- **Destination:** `/index.html`
+- **Action:** **Rewrite**
+
+Without that rule, refreshing any page except the home page shows "Not Found".
+
+## Step 6: Connect the three addresses
+
+Now every piece has a real address. Go to the **backend** → **Environment**:
+
+- `FRONTEND_URL` = your website address, for example
+  `https://agri-procurement-frontend.onrender.com`
+- `ML_SERVICE_URL` = your AI service address, for example
+  `https://agri-procurement-ml.onrender.com`
+
+Save. Render restarts the backend by itself.
+
+If you ever change the website address, change `FRONTEND_URL` too. A wrong
+`FRONTEND_URL` is the most common reason for "Couldn't reach the server" on
+the live site. You may put two addresses separated by a comma.
+
+## Step 7: Test the live site
+
+1. Wake things up: open the backend `/api/health`, the AI service
+   `/docs`, then the website. The first request after a sleep takes about a
+   minute.
+2. Register a farmer, book a slot, check the Case ID and QR code.
+3. Log in as the demo officers. They are in the README (mobile numbers
+   `9000000002` to `9000000008`, password `officer123`).
+4. Change the language. Open the chatbot.
+
+## Before real people use it
+
+The demo accounts and their passwords are public (they are in this README).
+On a public website, log in as admin (`9000000000`) and create your own
+officer accounts from **Create officer account**. Then change the demo
+passwords in `backend/prisma/seed.ts` before deploying again. Payments are
+tracked as a status only; no real money moves.
 
 ## If something breaks
 
-Every Render service has a **Logs** tab — that's the equivalent of the
-terminal windows you've been reading errors from locally. Same rule as
-always: copy the exact error text from there and we'll fix it the same
-way we've fixed everything else.
+Every Render service has a **Logs** tab, like your terminal at home. Copy
+the exact red error from there and send it over.
+
+| You see | Usually means |
+|---|---|
+| "Couldn't reach the server" on the site | `VITE_API_URL` wrong, or `FRONTEND_URL` wrong or has a typo |
+| Refreshing a page shows "Not Found" | the rewrite rule in Step 5 is missing |
+| Backend log: `JWT_SECRET is not set` | add `JWT_SECRET` in the backend Environment |
+| Backend log: cannot connect to database | `DATABASE_URL` must be the **Internal** URL of the database in the same region |
+| No wait-time estimate | the AI service is asleep, or `ML_SERVICE_URL` is wrong |
+| AI service build fails on numpy or pandas | add `PYTHON_VERSION` = `3.11.9` |

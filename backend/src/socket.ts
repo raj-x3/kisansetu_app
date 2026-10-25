@@ -9,12 +9,13 @@
 import { Server as SocketIOServer } from "socket.io";
 import http from "http";
 import { verifyToken } from "./utils/jwt";
+import { allowedOrigins } from "./utils/origins";
 
 let io: SocketIOServer | null = null;
 
 export function initSocket(server: http.Server): SocketIOServer {
   io = new SocketIOServer(server, {
-    cors: { origin: process.env.FRONTEND_URL || "http://localhost:5173" },
+    cors: { origin: allowedOrigins() },
   });
 
   io.on("connection", (socket) => {
