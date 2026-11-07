@@ -11,10 +11,9 @@ Your app is four pieces, and each must run on the internet:
 
 ## Read this first: the free-tier limits (checked on Render's own page)
 
-- **The free database expires 30 days after you create it.** After that you
-  get 14 days to upgrade before it is deleted. Only one free database is
-  allowed per account. Fine for an SIH demo; for anything longer, upgrade it
-  or move to another database host later.
+- **Render's own free database expires 30 days after you create it** (then 14
+  days to upgrade before it is deleted, and only one per account). That is
+  why Step 2 recommends Neon, whose free plan does not expire.
 - **Free web services go to sleep after 15 minutes without visitors** and take
   about a minute to wake up. Open the site once before a demo to wake it.
 - Free web services share **750 hours per month** across your account.
@@ -50,14 +49,37 @@ Token**, not your GitHub password.
 Check that the private file did not go up: run `git ls-files | grep env`. It
 must show only `backend/.env.example`.
 
-## Step 2: Create a fresh database
+## Step 2: Create a fresh database (free, two choices)
 
-If you made a database on Render before, delete it first (it was built for
-an older version of the app), then:
+**Choice A (recommended): Neon.** Free forever, no credit card, 1 GB of
+storage. It never expires, unlike Render's free database. It "goes to sleep"
+after 5 minutes of no use and wakes within a moment on the next request.
+Source: https://neon.com/pricing
 
-1. Render dashboard → **New +** → **PostgreSQL**.
-2. Name `agri-procurement-db`, plan **Free**, **Create Database**.
-3. When it is ready, copy the **Internal Database URL** from its page.
+1. Go to **neon.com** and sign up (GitHub sign-in is fine).
+2. **Create project.** Name it `agri-procurement`. Pick the region closest to
+   India that is offered (for example Singapore).
+3. On the project page click **Connect**. Turn **off** the "Connection
+   pooling" switch, so the address has no `-pooler` in it. Pick the
+   **Prisma**-style or plain connection string and copy it. It looks like
+   `postgresql://user:password@ep-something.region.aws.neon.tech/neondb?sslmode=require`
+4. Add `&connect_timeout=15` at the very end. This gives the database time to
+   wake up after sleeping.
+
+This whole address is your `DATABASE_URL` for Step 3. Treat it like a password.
+
+**Choice B: Render's own database.** Easier to set up, but it **expires 30
+days after creation** (14 more days to upgrade before it is deleted).
+Render dashboard → **New +** → **PostgreSQL** → name `agri-procurement-db`,
+plan **Free** → copy the **Internal Database URL**.
+
+Other free option: Supabase. Its free projects pause after 1 week without
+activity, so it needs more care. Source: https://supabase.com/pricing
+
+If you made a database before, do not reuse it. It was built for an older
+version of the app. Start with a fresh one.
+
+---
 
 ## Step 3: The backend (Web Service)
 
@@ -77,7 +99,7 @@ starts the server, every time. It is safe to repeat.
 
 | Name | Value |
 |---|---|
-| `DATABASE_URL` | the Internal Database URL from Step 2 |
+| `DATABASE_URL` | the full database address from Step 2 |
 | `JWT_SECRET` | a long random string. Do **not** reuse your local one |
 | `JWT_EXPIRES_IN` | `7d` |
 | `NODE_VERSION` | `20` |
@@ -168,6 +190,6 @@ the exact red error from there and send it over.
 | "Couldn't reach the server" on the site | `VITE_API_URL` wrong, or `FRONTEND_URL` wrong or has a typo |
 | Refreshing a page shows "Not Found" | the rewrite rule in Step 5 is missing |
 | Backend log: `JWT_SECRET is not set` | add `JWT_SECRET` in the backend Environment |
-| Backend log: cannot connect to database | `DATABASE_URL` must be the **Internal** URL of the database in the same region |
+| Backend log: cannot connect to database | Neon: the address must end with `?sslmode=require&connect_timeout=15` and must not contain `-pooler`. Render database: use its **Internal** URL |
 | No wait-time estimate | the AI service is asleep, or `ML_SERVICE_URL` is wrong |
 | AI service build fails on numpy or pandas | add `PYTHON_VERSION` = `3.11.9` |

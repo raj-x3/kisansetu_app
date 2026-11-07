@@ -16,6 +16,10 @@ import { useLanguage } from "../context/LanguageContext";
 import { useAuth } from "../context/AuthContext";
 import { PipelineBoard } from "../components/PipelineBoard";
 import { StaffForm } from "../components/StaffForm";
+import { CapacityPanel } from "../components/CapacityPanel";
+import { EmergencyReviewPanel } from "../components/EmergencyReviewPanel";
+import { QueueControlPanel } from "../components/QueueControlPanel";
+import { WaitlistManagementPanel } from "../components/WaitlistManagementPanel";
 
 interface Analytics {
   filtersApplied: boolean;
@@ -297,6 +301,11 @@ export function AdminDashboard() {
       )}
 
       {isManager && <PipelineBoard />}
+
+      <CapacityPanel canConfigure centres={isManager ? undefined : centres.map((c) => ({ id: c.id, name: c.name }))} />
+      <EmergencyReviewPanel centres={isManager ? undefined : centres.map((c) => ({ id: c.id, name: c.name }))} />
+      <QueueControlPanel canControl centres={isManager ? undefined : centres.map((c) => ({ id: c.id, name: c.name }))} />
+      <WaitlistManagementPanel canSetWindow centres={isManager ? undefined : centres.map((c) => ({ id: c.id, name: c.name }))} />
 
       {!isManager && (
       <div className="mt-6 rounded-2xl border-2 border-dashed border-wheat-dark/50 bg-wheat-light/10 p-5">

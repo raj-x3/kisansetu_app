@@ -30,7 +30,24 @@ export type NotificationType =
   | "documentReviewed"
   | "bookingCancelled"
   | "bookingRescheduled"
-  | "noShow";
+  | "noShow"
+  | "emergencySubmitted"
+  | "emergencyVerified"
+  | "emergencyApproved"
+  | "emergencyRejected"
+  | "emergencyEvidenceRequested"
+  | "emergencyReviewRequested"
+  | "emergencyRescheduled"
+  | "emergencyReminder"
+  | "queueDelayed"
+  | "queuePaused"
+  | "queueResumed"
+  | "centreDelayed"
+  | "slotOffer"
+  | "slotOfferExpired"
+  | "slotOfferAccepted"
+  | "waitlistJoined"
+  | "waitlistRemoved";
 
 export async function notifyFarmer(
   farmerId: string,

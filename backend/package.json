@@ -11,7 +11,12 @@
     "prisma:migrate": "prisma migrate dev --name init",
     "prisma:studio": "prisma studio",
     "seed": "ts-node prisma/seed.ts",
-    "start:render": "prisma db push && ts-node --transpile-only prisma/seed.ts && ts-node --transpile-only src/server.ts"
+    "start:render": "prisma db push && ts-node --transpile-only prisma/seed.ts && ts-node --transpile-only src/server.ts",
+    "test:recommend": "ts-node scripts/test-recommend.ts",
+    "test:emergency": "ts-node scripts/test-emergency.ts",
+    "test:weather": "ts-node scripts/test-weather.ts",
+    "test:queue": "ts-node scripts/test-queue.ts",
+    "test:waitlist": "ts-node scripts/test-waitlist.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

@@ -6,6 +6,8 @@ import { WeighingModal } from "../components/WeighingModal";
 import type { QueueRow } from "../types";
 import { TimelineModal } from "../components/TimelineModal";
 import { ScanModal } from "../components/ScanModal";
+import { QueueControlPanel } from "../components/QueueControlPanel";
+import { WaitlistManagementPanel } from "../components/WaitlistManagementPanel";
 
 const PAYMENT_LABEL_KEY: Record<string, any> = {
   PENDING: "payment.pending",
@@ -370,6 +372,9 @@ export function OperatorQueue() {
           }}
         />
       )}
+
+      <QueueControlPanel canControl />
+      <WaitlistManagementPanel canSetWindow={false} />
 
       {weighFormRow && (
         <WeighingModal

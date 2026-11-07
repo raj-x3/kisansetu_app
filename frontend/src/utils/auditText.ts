@@ -28,6 +28,8 @@ export function describeDetails(
   if (typeof d.result === "string") parts.push(t(d.result === "ACCEPTED" ? "quality.accepted" : "quality.rejected"));
   if (d.kg !== undefined) parts.push(`${d.kg} kg`);
   if (d.amount !== undefined) parts.push(`₹${d.amount}`);
+  if (typeof d.cropName === "string") parts.push(d.cropName);
+  if (typeof d.slotTime === "string") parts.push(d.slotTime);
   if (typeof d.docType === "string") parts.push(t(`doc.type.${d.docType}`));
   if (typeof d.docStatus === "string") parts.push(t(`doc.status.${d.docStatus}`));
   if (typeof d.fromStage === "string" && STAGE_KEY[d.fromStage]) parts.push(t(STAGE_KEY[d.fromStage]));

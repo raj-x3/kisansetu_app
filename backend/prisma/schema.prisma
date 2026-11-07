@@ -116,6 +116,8 @@ model Farmer {
   procurements Procurement[]
   notifications Notification[]
   documents     Document[]
+  emergencyRequests EmergencyRequest[]
+  waitlistEntries WaitlistEntry[]
 
   @@map("farmers")
 }
@@ -134,13 +136,32 @@ model ProcurementCentre {
   avgProcessingMin Int     @default(10) // avg minutes to process one farmer
   isActive        Boolean  @default(true)
   currentToken    Int      @default(0) // the token number currently being served, per centre
+  // Optional map position. Used only to look up weather for emergency requests.
+  // If empty, it is looked up once from the place name and saved here.
+  latitude        Float?
+  longitude       Float?
+  // Live queue controls (set by centre staff). activeCounters empty = derived
+  // from staff and machines; see utils/queueEstimate.ts.
+  activeCounters  Int?
+  isPaused        Boolean  @default(false) // procurement temporarily paused
+  pauseReason     String?
+  delayMinutes    Int      @default(0)     // extra delay reported by an officer
+  delayNote       String?
+  // Waitlist controls
+  waitlistPaused  Boolean  @default(false) // no automatic offers while true
+  waitlistPauseReason String?
+  offerWindowMin  Int      @default(15)    // minutes a farmer has to accept an offer
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  queueStageHistory QueueStageHistory[]
+  waitlistEntries   WaitlistEntry[]
   slots        Slot[]
+  capacityTemplates CapacityTemplate[]
   operators    Operator[]
   procurements Procurement[]
   preferredByFarmers Farmer[]
+  emergencyRequests EmergencyRequest[]
 
   @@map("procurement_centres")
 }
@@ -168,7 +189,9 @@ model Slot {
   bookedCount   Int      @default(0)
   createdAt     DateTime @default(now())
 
-  bookings Booking[]
+  bookings   Booking[]
+  capacities SlotCapacity[]
+  offers     SlotOffer[]
 
   @@unique([centreId, date, startTime])
   @@map("slots")
@@ -182,14 +205,23 @@ model Booking {
   slot        Slot          @relation(fields: [slotId], references: [id])
   caseId      String        @unique // e.g. CASE-2026-000047
   tokenNumber Int
-  crop        String
+  crop        String        // crop name as the farmer saw it (kept for old rows and display)
+  cropId      String?       // link to the Crop table; empty on bookings made before weight-based capacity
+  cropRef     Crop?         @relation(fields: [cropId], references: [id])
   quantityKg  Float
+  // True while this booking's weight is counted inside SlotCapacity.bookedWeightKg.
+  // Release only happens when this is true, and flips it to false, so a
+  // weight can never be released twice.
+  capacityCounted Boolean   @default(false)
   status      BookingStatus @default(BOOKED)
   createdAt   DateTime      @default(now())
 
   queueEntry   QueueEntry?
   procurement  Procurement?
   documents    Document[]
+  emergencyRequest EmergencyRequest?
+  stageHistory QueueStageHistory[]
+  queueNotice  QueueNotificationState?
 
   @@map("bookings")
 }
@@ -338,4 +370,365 @@ model Document {
 
   @@index([bookingId])
   @@map("documents")
+}
+
+// ---------- WEIGHT-BASED, CROP-WISE SLOT CAPACITY ----------
+
+// A crop that can be booked. Admins/managers add new rows from the
+// dashboard, so no crop is hard-coded anywhere in the code.
+model Crop {
+  id                    String   @id @default(uuid())
+  name                  String   @unique
+  isActive              Boolean  @default(true)
+  // Capacity (kg) given to this crop in a new slot when no centre-specific
+  // default has been saved. Editable by admin/manager.
+  defaultSlotCapacityKg Int      @default(5000)
+  // Largest single booking allowed for this crop (kg). A configurable
+  // app limit, not an official figure.
+  maxBookingKg          Int      @default(10000)
+  createdAt             DateTime @default(now())
+
+  bookings   Booking[]
+  capacities SlotCapacity[]
+  templates  CapacityTemplate[]
+  waitlistEntries WaitlistEntry[]
+
+  @@map("crops")
+}
+
+// The capacity of ONE crop in ONE slot (a slot already belongs to one
+// centre and one date). Wheat and paddy are separate rows, so one crop's
+// bookings can never use up another crop's room.
+// The database also refuses (CHECK constraint, see utils/capacityConstraints.ts)
+// any row where booked weight is negative or above the maximum.
+model SlotCapacity {
+  id             String   @id @default(uuid())
+  slotId         String   @map("slot_id")
+  slot           Slot     @relation(fields: [slotId], references: [id])
+  cropId         String   @map("crop_id")
+  crop           Crop     @relation(fields: [cropId], references: [id])
+  maxWeightKg    Int      @map("max_weight_kg")
+  bookedWeightKg Int      @default(0) @map("booked_weight_kg")
+  bookedCount    Int      @default(0) @map("booked_count")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @default(now()) @map("updated_at")
+
+  @@unique([slotId, cropId])
+  @@map("slot_capacities")
+}
+
+// A saved default: "at this centre, this crop gets this many kg in the
+// slot that starts at this time". Used whenever slots are generated for a
+// new date. Changing a template never changes dates that already exist.
+model CapacityTemplate {
+  id          String   @id @default(uuid())
+  centreId    String
+  centre      ProcurementCentre @relation(fields: [centreId], references: [id])
+  cropId      String
+  crop        Crop     @relation(fields: [cropId], references: [id])
+  startTime   String   // "09:00"
+  maxWeightKg Int
+  updatedAt   DateTime @updatedAt
+
+  @@unique([centreId, cropId, startTime])
+  @@map("capacity_templates")
+}
+
+// ---------- EMERGENCY CANCELLATION AND SMART RESCHEDULING ----------
+
+enum EmergencyCategory {
+  HEAVY_RAINFALL
+  FLOODING
+  SEVERE_WEATHER
+  ROAD_BLOCKAGE
+  OTHER
+}
+
+enum EmergencyStatus {
+  SUBMITTED
+  UNDER_VERIFICATION
+  AWAITING_REVIEW
+  APPROVED
+  REJECTED
+  RESCHEDULING_AVAILABLE
+  RESCHEDULED
+}
+
+enum VerificationOutcome {
+  STRONGLY_CORROBORATED
+  PARTIALLY_CORROBORATED
+  UNABLE_TO_VERIFY
+  CONTRADICTORY
+}
+
+// One farmer's request to cancel ONE booking because of an emergency.
+// A booking can have only one request (bookingId is unique), so the same
+// booking can never be claimed twice. The booking keeps its slot and its
+// reserved weight until an officer approves.
+model EmergencyRequest {
+  id          String   @id @default(uuid())
+  requestNo   String   @unique // e.g. EMR-2026-000012
+  bookingId   String   @unique
+  booking     Booking  @relation(fields: [bookingId], references: [id])
+  farmerId    String
+  farmer      Farmer   @relation(fields: [farmerId], references: [id])
+  centreId    String
+  centre      ProcurementCentre @relation(fields: [centreId], references: [id])
+
+  // Copied from the booking when the request is made, so the officer sees
+  // what was claimed even if the booking changes later.
+  crop        String
+  quantityKg  Float
+  slotId      String
+  slotDate    DateTime
+  slotStart   String
+  slotEnd     String
+
+  category    EmergencyCategory
+  description String
+  incidentAt  DateTime
+  // Optional, shared by the farmer on purpose. Rounded to 2 decimals
+  // (about 1 km) before saving, and shown only to the reviewing officers.
+  affectedLat Float?
+  affectedLng Float?
+
+  status      EmergencyStatus @default(SUBMITTED)
+  outcome     VerificationOutcome?
+  supportScore Int?
+  flagged     Boolean  @default(false)
+  flagReason  String?
+  manualReviewRequested Boolean @default(false)
+  farmerReviewNote String?
+
+  decision        String?   // "APPROVED" or "REJECTED"; empty while waiting
+  decisionRemarks String?
+  decidedByUserId String?
+  decidedAt       DateTime?
+  newBookingId    String?   // set when the farmer has rescheduled
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  evidence      EmergencyEvidence[]
+  verifications WeatherVerification[]
+  reviews       OfficerReview[]
+  reschedulings ReschedulingHistory[]
+
+  @@index([centreId, status])
+  @@index([farmerId])
+  @@map("emergency_requests")
+}
+
+model EmergencyEvidence {
+  id         String   @id @default(uuid())
+  requestId  String
+  request    EmergencyRequest @relation(fields: [requestId], references: [id])
+  fileName   String
+  mimeType   String   // decided from the file's real bytes, not its name
+  sizeBytes  Int
+  data       Bytes
+  createdAt  DateTime @default(now())
+
+  @@index([requestId])
+  @@map("emergency_evidence")
+}
+
+// One run of the weather check. Kept for every run (never overwritten) so an
+// officer can see what the data said and when.
+model WeatherVerification {
+  id           String   @id @default(uuid())
+  requestId    String
+  request      EmergencyRequest @relation(fields: [requestId], references: [id])
+  provider     String   // "open-meteo", "weatherapi" or "none"
+  source       String   // "LIVE", "UNAVAILABLE" or "NOT_CONFIGURED"
+  windowStart  DateTime
+  windowEnd    DateTime
+  outcome      VerificationOutcome
+  supportScore Int
+  reasons      Json     // [{ code, params }] translated on the screen
+  observations Json     // per place: rainfall, wind, alerts
+  triggeredByUserId String?
+  createdAt    DateTime @default(now())
+
+  @@index([requestId])
+  @@map("weather_verifications")
+}
+
+// Every officer decision or note on a request.
+model OfficerReview {
+  id          String   @id @default(uuid())
+  requestId   String
+  request     EmergencyRequest @relation(fields: [requestId], references: [id])
+  officerUserId String
+  officerName String
+  action      String   // APPROVE, REJECT, FLAG, UNFLAG, REQUEST_EVIDENCE, REVERIFY
+  remarks     String?
+  createdAt   DateTime @default(now())
+
+  @@index([requestId])
+  @@map("officer_reviews")
+}
+
+// When a booking's status changes because of an emergency (or the new booking
+// that replaces it). No foreign key, like the audit log, so it survives resets.
+model BookingStatusHistory {
+  id          String   @id @default(uuid())
+  bookingId   String
+  fromStatus  String?
+  toStatus    String
+  reason      String
+  actorUserId String?
+  createdAt   DateTime @default(now())
+
+  @@index([bookingId])
+  @@map("booking_status_history")
+}
+
+model ReschedulingHistory {
+  id           String   @id @default(uuid())
+  requestId    String
+  request      EmergencyRequest @relation(fields: [requestId], references: [id])
+  oldBookingId String
+  newBookingId String
+  oldSlotId    String
+  newSlotId    String
+  crop         String
+  quantityKg   Float
+  actorUserId  String
+  createdAt    DateTime @default(now())
+
+  @@index([requestId])
+  @@map("rescheduling_history")
+}
+
+
+// ---------- LIVE QUEUE AND WAITLIST ----------
+
+// One row each time a booking enters a processing stage. The row is closed
+// (completedAt filled) when the next stage starts. The averages used for
+// waiting-time estimates come from these real timings.
+model QueueStageHistory {
+  id          String           @id @default(uuid())
+  bookingId   String
+  booking     Booking          @relation(fields: [bookingId], references: [id])
+  farmerId    String
+  centreId    String
+  centre      ProcurementCentre @relation(fields: [centreId], references: [id])
+  cropName    String
+  tokenNumber Int
+  stage       ProcurementStage
+  startedAt   DateTime         @default(now())
+  completedAt DateTime?
+  status      String           @default("IN_PROGRESS") // IN_PROGRESS | DONE
+
+  @@index([centreId, startedAt])
+  @@index([bookingId])
+  @@map("queue_stage_history")
+}
+
+// Remembers what a farmer was last told, so we only notify on a real change.
+model QueueNotificationState {
+  bookingId      String   @id
+  booking        Booking  @relation(fields: [bookingId], references: [id])
+  lastEtaMin     Int?
+  lastNotifiedAt DateTime?
+  updatedAt      DateTime @updatedAt
+
+  @@map("queue_notification_state")
+}
+
+enum WaitlistStatus {
+  ACTIVE
+  OFFERED
+  FULFILLED
+  WITHDRAWN
+  EXPIRED
+}
+
+enum OfferStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  CANCELLED
+}
+
+// A farmer waiting for room for the FULL quantity of one crop at one centre on one date.
+model WaitlistEntry {
+  id            String         @id @default(uuid())
+  farmerId      String
+  farmer        Farmer         @relation(fields: [farmerId], references: [id])
+  centreId      String
+  centre        ProcurementCentre @relation(fields: [centreId], references: [id])
+  cropId        String
+  crop          Crop           @relation(fields: [cropId], references: [id])
+  quantityKg    Int
+  preferredDate DateTime       // date part only, same convention as Slot.date
+  windowStart   String?        // optional earliest start "09:00"
+  windowEnd     String?        // optional latest end "13:00"
+  status        WaitlistStatus @default(ACTIVE)
+  declineCount  Int            @default(0)
+  expiryCount   Int            @default(0)
+  bookingId     String?        @unique // booking created when an offer was accepted
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  offers SlotOffer[]
+
+  @@index([centreId, cropId, preferredDate, status])
+  @@index([farmerId, status])
+  @@map("waitlist_entries")
+}
+
+// A temporary hold on capacity for one waitlisted farmer. Not a booking.
+model SlotOffer {
+  id              String      @id @default(uuid())
+  waitlistId      String
+  waitlist        WaitlistEntry @relation(fields: [waitlistId], references: [id])
+  farmerId        String
+  centreId        String
+  slotId          String
+  slot            Slot        @relation(fields: [slotId], references: [id])
+  cropId          String
+  quantityKg      Int
+  status          OfferStatus @default(PENDING)
+  expiresAt       DateTime
+  // True while this offer's weight is counted in the slot. Released once
+  // (guarded flip), or handed over to the booking on acceptance.
+  reservationHeld Boolean     @default(true)
+  bookingId       String?
+  respondedAt     DateTime?
+  createdAt       DateTime    @default(now())
+
+  @@index([status, expiresAt])
+  @@index([farmerId, status])
+  @@index([centreId, createdAt])
+  @@map("slot_offers")
+}
+
+// Permanent record of every allocation decision, including why a farmer was
+// skipped. No foreign keys on purpose, like the audit log.
+model AllocationLog {
+  id          String   @id @default(uuid())
+  centreId    String
+  slotId      String?
+  cropId      String?
+  cropName    String   @default("")
+  slotDate    DateTime?
+  slotStart   String?
+  event       String   // RELEASED OFFERED SKIPPED ACCEPTED DECLINED EXPIRED WITHDRAWN NO_ELIGIBLE PAUSED MANUAL PAUSE_ON PAUSE_OFF
+  trigger     String?
+  kg          Int      @default(0)
+  waitlistId  String?
+  offerId     String?
+  farmerCode  String?
+  reason      String?
+  params      Json?
+  actorUserId String?
+  actorRole   String?
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([centreId, createdAt])
+  @@map("allocation_logs")
 }

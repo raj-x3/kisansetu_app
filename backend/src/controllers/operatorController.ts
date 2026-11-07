@@ -3,6 +3,8 @@
 // scoping happens by looking up the operator's centreId first, on
 // every single function, rather than trusting anything from the client.
 
+import { releaseBookingCapacity } from "../services/capacityService";
+import { hasOpenEmergency } from "../services/emergencyService";
 import { documentsRuleError } from "../services/documentService";
 import { Request, Response } from "express";
 import { z } from "zod";
@@ -14,6 +16,8 @@ import { formatBillReference } from "../utils/billReference";
 import { sendSms } from "../services/smsService";
 import { logAudit } from "../services/auditService";
 import { notifyFarmer } from "../services/notificationService";
+import { onCapacityReleased } from "../services/waitlistService";
+import { recordStageChange } from "../services/queueService";
 
 function startOfToday(): Date {
   const d = new Date();
@@ -176,6 +180,7 @@ async function advanceStage(
     where: { id: booking.queueEntry.id },
     data: { stage: nextStage },
   });
+  await recordStageChange(prisma, { id: booking.id, farmerId: booking.farmerId, tokenNumber: booking.tokenNumber, crop: booking.crop, centreId }, nextStage);
 
   // Real-time: the farmer's own dashboard updates instantly, the same
   // mechanism as the live token — never a page refresh needed.
@@ -228,13 +233,24 @@ export async function markNoShow(req: Request, res: Response) {
     if (booking.slot.date > startOfToday()) {
       return res.status(409).json({ error: "A no-show can only be recorded on or after the booking date." });
     }
+    // The farmer sent an emergency request that nobody has decided yet: wait for the decision.
+    if (await hasOpenEmergency(prisma, booking.id)) {
+      return res.status(409).json({ error: "This farmer has an emergency request waiting for a decision, so a no-show can't be recorded yet." });
+    }
 
-    const changed = await prisma.booking.updateMany({
-      where: { id: booking.id, status: "BOOKED" },
-      data: { status: "NO_SHOW" },
+    // Mark the no-show and give the reserved crop weight back in one step,
+    // so the capacity numbers can never disagree with the booking status.
+    const changedCount = await prisma.$transaction(async (tx) => {
+      const changed = await tx.booking.updateMany({
+        where: { id: booking.id, status: "BOOKED" },
+        data: { status: "NO_SHOW" },
+      });
+      if (changed.count === 1) await releaseBookingCapacity(tx, booking.id);
+      return changed.count;
     });
-    if (changed.count === 0) return res.status(409).json({ error: "This booking is no longer active." });
+    if (changedCount === 0) return res.status(409).json({ error: "This booking is no longer active." });
 
+    await onCapacityReleased({ slotId: booking.slotId, cropId: booking.cropId, kg: Math.round(booking.quantityKg), trigger: "NO_SHOW" });
     await logAudit({ userId: req.user!.userId, role: req.user!.role }, "MARK_NO_SHOW", {
       bookingId: booking.id,
       details: { token: booking.tokenNumber },
@@ -317,6 +333,7 @@ export async function submitQualityCheck(req: Request, res: Response) {
     where: { id: booking.queueEntry.id },
     data: { stage: "QUALITY_CHECKED" },
   });
+  await recordStageChange(prisma, { id: booking.id, farmerId: booking.farmerId, tokenNumber: booking.tokenNumber, crop: booking.crop, centreId }, "QUALITY_CHECKED");
 
   getIO().to(`centre:${centreId}`).emit("stage-updated", {
     centreId,
@@ -399,6 +416,7 @@ export async function submitWeighing(req: Request, res: Response) {
     where: { id: booking.queueEntry.id },
     data: { stage: "WEIGHED" },
   });
+  await recordStageChange(prisma, { id: booking.id, farmerId: booking.farmerId, tokenNumber: booking.tokenNumber, crop: booking.crop, centreId }, "WEIGHED");
 
   getIO().to(`centre:${centreId}`).emit("stage-updated", {
     centreId,
@@ -465,6 +483,7 @@ export async function completeProcurement(req: Request, res: Response) {
     where: { id: booking.queueEntry.id },
     data: { stage: "COMPLETED" },
   });
+  await recordStageChange(prisma, { id: booking.id, farmerId: booking.farmerId, tokenNumber: booking.tokenNumber, crop: booking.crop, centreId }, "COMPLETED");
 
   // This is the fix for "a finished booking stays as the farmer's
   // current booking forever": Booking.status was never actually moved

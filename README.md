@@ -325,3 +325,144 @@ Not built: putting a case "on hold", and moving to a different centre
 creates the tables and demo accounts (`npm run start:render`), both AI models
 trained on deploy, a page-refresh rule for the website, tolerant web-address
 (CORS) settings, and the real Render free-tier limits. Follow it step by step.
+
+## Crop-wise, weight-based slot capacity
+
+- Every crop has its own kg capacity in every slot (`SlotCapacity`, one row per slot and crop). Wheat bookings only use wheat room, paddy only paddy room.
+- Crops are database rows, not code. Admin, Manager and Procurement Officer can add a crop and set its default capacity and largest booking in the **Capacity** panel. No code change is needed.
+- Farmer flow: centre → crop → date → weight → the backend ranks only that crop's slots (smallest sufficient remaining room first) → farmer confirms.
+- The booking is checked again on the server at confirm time, using one atomic SQL update plus a database CHECK rule, so two farmers cannot take the last kilograms.
+- Cancel, no-show and reschedule give the weight back exactly once. A weight change re-checks capacity.
+- Capacity can be edited per crop and slot by Admin, Manager and Procurement Officer. Other officers see it read-only. The capacity cannot be set below what is already booked.
+- The "Limited" label (less than 25% left) and the largest-booking limit are app settings, not official figures.
+
+## ✅ Module 24: Emergency cancellation and smart rescheduling
+
+A farmer who cannot reach the centre (heavy rain, flooding, a storm warning, a blocked road, another genuine emergency) can send an emergency request instead of a normal cancellation. An officer decides. Nothing is approved or rejected automatically.
+
+**What happens**
+
+1. The farmer opens their booking → **Emergency cancellation** → picks what happened, writes a few words, says when, and may share an approximate place and up to 3 photos/PDFs. Photos are shrunk on the phone and their hidden details (such as GPS) are removed.
+2. The server checks the weather in the background (**Under verification**) and then moves the request to **Waiting for an officer**. The booking and its reserved weight stay untouched until a decision.
+3. The Document Officer, Manager or Admin of that centre opens the request: sees the farmer's claim, the evidence, the weather check (with its source, time window and reasons), then **Approves**, **Rejects** (remarks required), **Asks for more proof**, or **Flags** it.
+4. **Approve** cancels the booking and releases its weight, in one database transaction, to that crop's capacity only. The farmer sees **Choose a new time**.
+5. **Reschedule** lists the earliest slots at the same centre that can hold the *whole* weight of the same crop. Confirming reserves the weight atomically and creates a new booking (new Case ID and token). Crop, weight and centre are not typed again.
+6. A rejected farmer can ask for **one** second review.
+
+**How the weather check judges (and what it will not do)**
+
+- It looks at the farmer's reported place (if they shared it), a point halfway to the centre, and the centre. If no place was shared, it looks at the centre and four points about 10 km around it.
+- A dry centre alone never disproves a claim, and rain nearby never proves one. A claim is marked *Information does not match* only when the farmer's own reported place has data and is dry everywhere checked.
+- If the weather service is down or not set up, the result says *Could not be checked*. That is never held against the farmer.
+- Weather data cannot prove that one person could not travel. The result is advice for the officer, shown with its reasons.
+- Open-Meteo data is **model data**, not weather-station readings, and has no government warnings. WeatherAPI adds official alerts where it has them.
+- The rain levels are settings in `.env`, **not official classifications**.
+
+**Where to see it**
+
+- Farmer: dashboard → *Emergency requests* card (status tracker, officer remarks, decision date).
+- Document Officer: *Emergency requests* section on the officer dashboard.
+- Manager and Admin: *Emergency requests* section on their dashboard.
+
+**Setup**
+
+1. Apply the new tables: `cd backend && npx prisma db push` (this project uses `db push`, it has no migrations folder; `npm run start:render` does it for you online).
+2. Optional: set the weather variables listed at the end of `backend/.env.example`. Without any change it uses Open-Meteo, which needs no key.
+3. Run the tests (no database, no internet needed): `npm run test:emergency` and `npm run test:weather`.
+
+**Not included (honest limits)**
+
+- Email: the project has no email service, so notifications go in-app and by SMS (only if Fast2SMS is configured).
+- The rate limiter lives in server memory (one server). The database still allows only one request per booking.
+- WeatherAPI parsing follows its public format but has **not been run against the live service** here. Open-Meteo parsing is tested against its documented format with a stand-in answer, not the live service.
+- Nothing has been run end to end in a browser yet. The SQL guards (one request per booking, release once, no overbooking, double-tap safety) were tested on a real PostgreSQL.
+
+### Emergency API
+
+| Method and path | Who | What |
+|---|---|---|
+| `POST /api/emergency-cancellations` | Farmer | Send a request `{bookingId, category, description, incidentAt, affectedLat?, affectedLng?, evidence?[]}` |
+| `GET /api/emergency-cancellations/mine` | Farmer | My requests |
+| `GET /api/emergency-cancellations/farmer/:farmerId` | Farmer | Only `me` or my own id |
+| `GET /api/emergency-cancellations/:id` | Farmer | One of my requests |
+| `POST /api/emergency-cancellations/:id/evidence` | Farmer | Add files while the request is open |
+| `GET /api/emergency-cancellations/:id/evidence/:evidenceId/file` | Farmer (own), reviewers (own centre) | Download a file |
+| `POST /api/emergency-cancellations/:id/manual-review` | Farmer | Ask for a second review (once, after a rejection) |
+| `GET /api/emergency-cancellations/:id/reschedule-options` | Farmer | Earliest slots that fit the whole weight |
+| `POST /api/emergency-cancellations/:id/reschedule` | Farmer | Confirm `{slotId}` |
+| `GET /api/emergency-cancellations/:id/weather-verification` | Admin, Manager, Document Officer | Weather check history |
+| `GET /api/officer/emergency-requests` | Admin, Manager, Document Officer | List; filters `centreId` (admin), `date`, `crop`, `category`, `status`, `flagged` |
+| `GET /api/officer/emergency-requests/:id` | same | Detail, evidence, checks, history |
+| `PATCH /api/officer/emergency-requests/:id/review` | same | `{action: APPROVE\|REJECT\|REQUEST_EVIDENCE\|FLAG\|UNFLAG, remarks}` |
+| `POST /api/officer/emergency-requests/:id/reverify` | same | Run the weather check again |
+
+Staff see only their own centre. A farmer's phone number and address are never sent to officers. Other officer roles get "no permission".
+
+## ✅ Module 25: Live queue, wait-time prediction and automatic waitlist
+
+Two connected features. The farmer sees how long the wait really is. And room that opens up (a cancellation, an approved emergency, a no-show) goes to a waiting farmer automatically.
+
+### Live queue and wait time
+
+- **Farmer dashboard → Live queue.** Shows now serving, farmers ahead, "until your turn starts" and "until you are finished" as **ranges** (for example 20–30 min), a busy level (Low, Moderate, High, Delayed, Temporarily paused), and how busy the other centres are.
+- **The maths** (no AI guesswork): the work left for the farmers ahead (each person's remaining steps, using this centre's recent measured step times) divided by the number of active counters. The speed is a rolling average of the last farmers who finished. If fewer than 3 have finished, a labelled **baseline** is used and the farmer is told so.
+- **Counters:** the smaller of the centre's configured operators and machines (a counter needs both), or set by an officer for the day.
+- **Delay and pause:** an officer can report "running N minutes late" or pause the centre with a reason. Today's farmers are told (in-app, and SMS only if Fast2SMS is set up). Resuming also lets the waitlist continue.
+- **Notifications** only for real changes: the wait rose by at least 15 minutes and at least 25%, and not more than once per 20 minutes.
+- **Officer congestion view:** current queue, expected arrivals this hour (booked farmers × the share who usually show up), predicted peak, workload, counter use, slowest step, and a look-ahead hour by hour.
+- Updates arrive live through Socket.IO. They follow real steps (arrived, verified, quality, weighed), not browser timers.
+
+### Waitlist and slot offers
+
+1. A farmer who finds no slot that fits the **whole** weight taps **Join waitlist** (crop and centre specific, optional time range). Up to 5 active entries.
+2. When room opens, the server finds waiting farmers of the **same crop, centre and date** whose **full** weight fits, oldest first (first come, first served). A wheat farmer never gets a paddy offer, and nobody gets a partial slot.
+3. The best match gets an **offer**. The weight is held for them for a short time (15 minutes by default; an Admin or Manager can change it). An offer is **not a booking** until the farmer accepts.
+4. **Accept** creates the booking atomically (new token and Case ID). **Decline** or **no answer in time** releases the hold and moves to the next farmer. A farmer who misses 3 offers is removed from the list.
+5. If nobody fits, the room simply stays in the public booking pool.
+6. Officers see the waitlist in offer order, who fits right now, pending offers, and a full **allocation history** with the reason each farmer was skipped. They can **pause automatic offers** (reason required), **offer open room now**, and every manual action is logged with name, time and reason.
+
+Room is released automatically by: normal cancellation, approved emergency cancellation, no-show, a booking moved or made lighter, and a slot capacity increase.
+
+### Safety (what was tested)
+
+All holds use the same guarded SQL as ordinary bookings, so room cannot be given twice. Tested on a real PostgreSQL:
+
+- 12 farmers racing for 4,000 kg with 1,500 kg each → exactly 2 holds granted.
+- One offer tapped 8 times at once → exactly 1 winner.
+- One expired offer closed by 6 parallel job runs → the weight is returned once.
+- Wheat activity never changes paddy numbers. The database refuses a total above capacity.
+
+Plus `npm run test:queue` (21 checks on the maths and look-ahead) and `npm run test:waitlist` (19 checks on matching and ordering). Neither needs a database.
+
+### Setup
+
+1. `cd backend && npx prisma db push` (adds the waitlist, offer, allocation-log and queue-history tables; nothing is deleted).
+2. Optional settings are at the end of `backend/.env.example`.
+3. **Background job:** `JOB_TICK_SECONDS` (default 30). The server closes timed-out offers on its own timer, so no browser needs to be open. On a free host that **sleeps** when idle (such as Render's free plan), a sleeping server cannot expire offers. It catches up the moment it wakes, but for a live demo keep it awake.
+
+### Honest limits
+
+- The job runs inside the one server process. With several server copies it is still safe (guarded updates), just repeated.
+- Wait-time ranges are estimates from this centre's own recent data. Early on they use a labelled baseline.
+- Not run end to end in a browser yet. SMS goes out only if Fast2SMS is configured; there is no email service.
+- `ml-service` is not used for these estimates. They are plain, explainable calculations.
+
+### Queue and waitlist API
+
+| Method and path | Who | What |
+|---|---|---|
+| `GET /api/queue/farmer/me` | Farmer | My position, wait ranges, centre level |
+| `GET /api/queue/centres` · `GET /api/queue/centres/:centreId` | Signed in | How busy each centre is |
+| `GET /api/queue/:centreId/estimate/:tokenNumber` | Staff | Wait estimate for one token |
+| `GET /api/queue/:centreId/congestion` · `/predictions` | Staff | Current numbers and hourly look-ahead |
+| `PATCH /api/queue/:centreId/status` | Admin, Manager, Operator | `{activeCounters?, delayMinutes?, delayNote?, paused?, pauseReason?}` |
+| `POST /api/waitlist` | Farmer | Join `{centreId, cropId, quantityKg, date, windowStart?, windowEnd?}` |
+| `GET /api/waitlist/me` · `GET /api/waitlist/:id/offers` | Farmer | My entries, history of offers |
+| `DELETE /api/waitlist/:id` | Farmer | Leave the waitlist |
+| `POST /api/slot-offers/:id/accept` · `/decline` | Farmer (owner) | Answer an offer |
+| `GET /api/officer/waitlist/:centreId` | Admin, Manager, Operator, Procurement Officer | Waitlist, offers, allocation history |
+| `POST /api/officer/waitlist/:centreId/redistribute` | same | Offer open room now `{reason}` |
+| `POST /api/officer/waitlist/:centreId/pause` | same | `{paused, reason}` |
+| `PUT /api/officer/waitlist/:centreId/offer-window` | Admin, Manager | `{minutes}` |
+
+Staff work only on their own centre.

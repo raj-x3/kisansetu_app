@@ -1,11 +1,16 @@
-import { useEffect, useState, ReactNode } from "react";
+import { useCallback, useEffect, useState, ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api, getErrorMessage } from "../services/api";
 import { socket } from "../services/socket";
 import { DocumentsPanel } from "../components/DocumentsPanel";
 import { TimelineModal } from "../components/TimelineModal";
 import { RescheduleModal } from "../components/RescheduleModal";
+import { ChangeWeightModal } from "../components/ChangeWeightModal";
 import { QrCode } from "../components/QrCode";
+import { EmergencyModal } from "../components/EmergencyModal";
+import { EmergencyStatusCard } from "../components/EmergencyStatusCard";
+import { LiveQueuePanel } from "../components/LiveQueuePanel";
+import { WaitlistPanel } from "../components/WaitlistPanel";
 import { FarmerProfile, FarmerBooking, ProcurementStage } from "../types";
 import { ProcessChain } from "../components/ProcessChain";
 import { useLanguage } from "../context/LanguageContext";
@@ -54,8 +59,22 @@ export function FarmerDashboard() {
   const [loading, setLoading] = useState(true);
   const [showTimeline, setShowTimeline] = useState(false);
   const [showReschedule, setShowReschedule] = useState(false);
+  const [showWeight, setShowWeight] = useState(false);
   const [showQr, setShowQr] = useState(false);
+  const [showEmergency, setShowEmergency] = useState(false);
+  const [emergencyKey, setEmergencyKey] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // Reloads the active booking and queue (used after an emergency decision or a new slot).
+  const refreshBooking = useCallback(() => {
+    Promise.all([api.get("/bookings/my"), api.get("/queue/my-position")])
+      .then(([bookingsRes, queueRes]) => {
+        const active = bookingsRes.data.find((b: FarmerBooking) => b.status === "BOOKED");
+        setBooking(active ?? null);
+        setQueue(queueRes.data);
+      })
+      .catch(() => undefined);
+  }, []);
 
   async function cancelMyBooking() {
     if (!booking || !window.confirm(t("booking.cancelConfirm"))) return;
@@ -334,12 +353,29 @@ export function FarmerDashboard() {
               <button className="text-sm font-semibold text-field underline" onClick={() => setShowReschedule(true)}>
                 {t("booking.change")}
               </button>
+              <button className="text-sm font-semibold text-field underline" onClick={() => setShowWeight(true)}>
+                {t("cap.changeWeight")}
+              </button>
               <button className="text-sm font-semibold text-red-600 underline" onClick={cancelMyBooking}>
                 {t("booking.cancel")}
+              </button>
+              <button className="text-sm font-semibold text-red-600 underline" onClick={() => setShowEmergency(true)}>
+                {t("emg.button")}
               </button>
             </>
           )}
         </div>
+      )}
+      {showEmergency && booking && (
+        <EmergencyModal
+          booking={booking}
+          onClose={() => setShowEmergency(false)}
+          onSent={() => {
+            setShowEmergency(false);
+            setNotice(t("emg.sent"));
+            setEmergencyKey((k) => k + 1);
+          }}
+        />
       )}
       {showQr && booking && (
         <div className="mt-4 inline-block rounded-2xl border border-soil-light/20 bg-white p-4 text-center">
@@ -350,6 +386,17 @@ export function FarmerDashboard() {
           <p className="mt-2 text-xs font-semibold text-soil">{booking.caseId}</p>
           <p className="mt-1 max-w-[220px] text-xs text-soil-light">{t("qr.hint")}</p>
         </div>
+      )}
+      {showWeight && booking && (
+        <ChangeWeightModal
+          booking={booking}
+          onClose={() => setShowWeight(false)}
+          onChanged={(newKg) => {
+            setBooking((prev) => (prev ? { ...prev, quantityKg: newKg } : prev));
+            setShowWeight(false);
+            setNotice(t("cap.weightChanged"));
+          }}
+        />
       )}
       {showReschedule && booking && (
         <RescheduleModal
@@ -365,6 +412,11 @@ export function FarmerDashboard() {
       )}
       {showTimeline && booking && <TimelineModal bookingId={booking.id} onClose={() => setShowTimeline(false)} />}
 
+      <EmergencyStatusCard reloadKey={emergencyKey} onBookingChanged={refreshBooking} />
+
+      <WaitlistPanel onBookingChanged={refreshBooking} reloadKey={emergencyKey} />
+
+      <LiveQueuePanel />
       {booking && <DocumentsPanel bookingId={booking.id} stage={booking.stage} />}
 
       <div className="mt-8 grid gap-6 sm:grid-cols-2">

@@ -13,6 +13,8 @@ const prisma = new PrismaClient();
 const CENTRES = [
   {
     name: "Karnal Grain Procurement Centre",
+    latitude: 29.69, // approximate town position, used only for the emergency weather check
+    longitude: 76.99,
     location: "Karnal Mandi Road",
     district: "Karnal",
     state: "Haryana",
@@ -25,6 +27,8 @@ const CENTRES = [
   },
   {
     name: "Panipat Procurement Centre",
+    latitude: 29.39, // approximate town position, used only for the emergency weather check
+    longitude: 76.97,
     location: "Panipat Sector 12",
     district: "Panipat",
     state: "Haryana",
@@ -37,6 +41,8 @@ const CENTRES = [
   },
   {
     name: "Sonipat Procurement Centre",
+    latitude: 28.99, // approximate town position, used only for the emergency weather check
+    longitude: 77.02,
     location: "Sonipat Grain Market",
     district: "Sonipat",
     state: "Haryana",
@@ -49,7 +55,28 @@ const CENTRES = [
   },
 ];
 
+// Starting crops. They are ordinary database rows: an admin or manager can add
+// more, switch some off, or change these numbers on the dashboard. The kg values
+// are demo defaults for a prototype, not official figures.
+const CROPS = [
+  { name: "Wheat", defaultSlotCapacityKg: 5000, maxBookingKg: 10000 },
+  { name: "Paddy", defaultSlotCapacityKg: 4000, maxBookingKg: 10000 },
+  { name: "Maize", defaultSlotCapacityKg: 3000, maxBookingKg: 8000 },
+  { name: "Mustard", defaultSlotCapacityKg: 2500, maxBookingKg: 6000 },
+  { name: "Sugarcane", defaultSlotCapacityKg: 6000, maxBookingKg: 15000 },
+];
+
 async function main() {
+  for (const crop of CROPS) {
+    const existing = await prisma.crop.findUnique({ where: { name: crop.name } });
+    if (existing) {
+      console.log(`Skipping crop "${crop.name}" — already exists.`);
+      continue;
+    }
+    await prisma.crop.create({ data: crop });
+    console.log(`Created crop "${crop.name}".`);
+  }
+
   for (const centre of CENTRES) {
     const existing = await prisma.procurementCentre.findFirst({ where: { name: centre.name } });
     if (existing) {

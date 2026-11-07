@@ -12,6 +12,7 @@ import cors from "cors";
 import http from "http";
 import { initSocket } from "./socket";
 import { allowedOrigins } from "./utils/origins";
+import { ensureCapacityConstraints } from "./utils/capacityConstraints";
 
 import authRoutes from "./routes/authRoutes";
 import farmerRoutes from "./routes/farmerRoutes";
@@ -26,6 +27,12 @@ import adminRoutes from "./routes/adminRoutes";
 import notificationRoutes from "./routes/notificationRoutes";
 import documentRoutes from "./routes/documentRoutes";
 import caseRoutes from "./routes/caseRoutes";
+import cropRoutes from "./routes/cropRoutes";
+import capacityRoutes from "./routes/capacityRoutes";
+import emergencyRoutes from "./routes/emergencyRoutes";
+import officerEmergencyRoutes from "./routes/officerEmergencyRoutes";
+import { waitlistRouter, slotOfferRouter, officerWaitlistRouter } from "./routes/waitlistRoutes";
+import { startBackgroundJobs } from "./services/backgroundJobs";
 
 const app = express();
 const server = http.createServer(app);
@@ -61,6 +68,13 @@ app.use("/api/admin", adminRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/cases", caseRoutes);
+app.use("/api/crops", cropRoutes);
+app.use("/api/capacity", capacityRoutes);
+app.use("/api/emergency-cancellations", emergencyRoutes);
+app.use("/api/officer/emergency-requests", officerEmergencyRoutes);
+app.use("/api/waitlist", waitlistRouter);
+app.use("/api/slot-offers", slotOfferRouter);
+app.use("/api/officer/waitlist", officerWaitlistRouter);
 
 // --- 404 handler: any URL that doesn't match a route above ---
 app.use((req, res) => {
@@ -77,4 +91,6 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, () => {
   console.log(`Backend API running on port ${PORT}`);
+  void ensureCapacityConstraints();
+  startBackgroundJobs();
 });

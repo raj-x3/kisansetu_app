@@ -49,7 +49,9 @@ export async function getOrCreateSlotsForDate(centreId: string, dateStr: string)
     cursor = end;
   }
 
-  await prisma.slot.createMany({ data: slotsToCreate });
+  // skipDuplicates: if two farmers open a brand-new date at the same moment,
+  // the second insert is quietly ignored instead of failing.
+  await prisma.slot.createMany({ data: slotsToCreate, skipDuplicates: true });
 
   return prisma.slot.findMany({ where: { centreId, date }, orderBy: { startTime: "asc" } });
 }

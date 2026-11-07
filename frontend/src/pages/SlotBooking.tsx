@@ -1,8 +1,13 @@
+import axios from "axios";
 import { QrCode } from "../components/QrCode";
-import { useEffect, useState } from "react";
+import { SlotCapacityCard } from "../components/SlotCapacityCard";
+import { JoinWaitlistBox } from "../components/JoinWaitlistBox";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, getErrorMessage } from "../services/api";
 import { useLanguage } from "../context/LanguageContext";
+import { kg } from "../utils/kg";
+import type { Crop, Recommendation } from "../types";
 
 interface Centre {
   id: string;
@@ -10,16 +15,6 @@ interface Centre {
   location: string;
   district: string;
   state: string;
-}
-
-interface Slot {
-  id: string;
-  startTime: string;
-  endTime: string;
-  capacity: number;
-  bookedCount: number;
-  available: number;
-  isFull: boolean;
 }
 
 interface Confirmation {
@@ -37,70 +32,138 @@ function todayStr() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function prettyDate(d: string) {
+  return new Date(`${d}T00:00:00.000Z`).toLocaleDateString("en-IN", { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+function errorCode(err: unknown): string | null {
+  return axios.isAxiosError(err) ? (err.response?.data?.code ?? null) : null;
+}
+
+// The booking page follows one fixed order: centre, crop, date, weight.
+// Every slot card and every recommendation comes from the backend
+// (GET /slots/recommend), recalculated from the live database each time
+// something changes. The page never calculates availability itself.
 export function SlotBooking() {
   const { t } = useLanguage();
   const navigate = useNavigate();
 
   const [centres, setCentres] = useState<Centre[]>([]);
-  const [crop, setCrop] = useState("Wheat");
+  const [crops, setCrops] = useState<Crop[]>([]);
   const [centreId, setCentreId] = useState("");
+  const [cropId, setCropId] = useState("");
   const [date, setDate] = useState(todayStr());
-  const [quantityKg, setQuantityKg] = useState("");
+  const [weight, setWeight] = useState("");
 
-  const [slots, setSlots] = useState<Slot[]>([]);
-  const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
-  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [rec, setRec] = useState<Recommendation | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [weightError, setWeightError] = useState<string | null>(null);
+  const [checkedAt, setCheckedAt] = useState<Date | null>(null);
 
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
 
-  // Load centres once, and default to the first one so the page
-  // isn't blank on first load.
+  // Only the newest request may update the screen, so a slow older
+  // answer can never overwrite a newer one.
+  const latestRequest = useRef(0);
+
+  const crop = crops.find((c) => c.id === cropId) ?? null;
+  const trimmed = weight.trim();
+  const weightNum = trimmed === "" ? null : Number(trimmed);
+  const weightIsNumber = weightNum !== null && Number.isFinite(weightNum);
+
+  // Load centres and crops once. Both default to their first entry so the
+  // page is never blank on first load.
   useEffect(() => {
-    api.get("/centres").then((res) => {
-      setCentres(res.data);
-      if (res.data.length > 0) setCentreId(res.data[0].id);
-    });
+    api
+      .get("/centres")
+      .then((res) => {
+        setCentres(res.data);
+        if (res.data.length > 0) setCentreId(res.data[0].id);
+      })
+      .catch((err) => setError(getErrorMessage(err)));
+    api
+      .get("/crops")
+      .then((res) => {
+        setCrops(res.data);
+        if (res.data.length > 0) setCropId(res.data[0].id);
+      })
+      .catch((err) => setError(getErrorMessage(err)));
   }, []);
 
-  // Re-fetch slots any time the centre or date changes.
+  const fetchRec = useCallback(
+    async (silent: boolean) => {
+      if (!centreId || !cropId || !date) return;
+      if (weightNum !== null && !Number.isFinite(weightNum)) {
+        setWeightError(t("booking.qtyError"));
+        setRec(null);
+        return;
+      }
+      const myRequest = ++latestRequest.current;
+      if (!silent) setLoading(true);
+      try {
+        const res = await api.get("/slots/recommend", {
+          params: { centreId, cropId, date, ...(weightNum !== null ? { weightKg: weightNum } : {}) },
+        });
+        if (myRequest !== latestRequest.current) return;
+        setRec(res.data);
+        setWeightError(null);
+        setCheckedAt(new Date());
+        if (!silent) setError(null);
+      } catch (err) {
+        if (myRequest !== latestRequest.current) return;
+        const code = errorCode(err);
+        if (code === "WEIGHT_INVALID" || code === "WEIGHT_TOO_HIGH") {
+          setWeightError(getErrorMessage(err));
+          setRec(null);
+        } else {
+          setError(getErrorMessage(err));
+        }
+      } finally {
+        if (myRequest === latestRequest.current) setLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [centreId, cropId, date, weightNum, t]
+  );
+
+  // Recalculate whenever centre, crop, date or weight changes (a short
+  // pause while typing, so we don't ask the server on every keystroke).
   useEffect(() => {
-    if (!centreId || !date) return;
-    setSlotsLoading(true);
-    setSelectedSlotId(null);
-    setError(null);
-    api
-      .get("/slots", { params: { centreId, date } })
-      .then((res) => setSlots(res.data))
-      .catch((err) => setError(getErrorMessage(err)))
-      .finally(() => setSlotsLoading(false));
-  }, [centreId, date]);
+    const id = setTimeout(() => fetchRec(false), 400);
+    return () => clearTimeout(id);
+  }, [fetchRec]);
 
-  async function handleBook() {
-    if (!selectedSlotId) return;
-    const qty = Number(quantityKg);
-    if (!qty || qty <= 0) {
-      setError(t("booking.qtyError"));
-      return;
-    }
+  // Keep the numbers fresh while the page stays open: every 30 seconds,
+  // and when the farmer comes back to this tab.
+  useEffect(() => {
+    const tick = () => {
+      if (document.visibilityState === "visible") fetchRec(true);
+    };
+    const id = setInterval(tick, 30000);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [fetchRec]);
 
+  async function handleBook(slotId: string) {
+    if (!weightIsNumber || weightNum === null || !cropId) return;
     setSubmitting(true);
     setError(null);
+    setNotice(null);
     try {
-      const res = await api.post("/bookings", {
-        slotId: selectedSlotId,
-        crop,
-        quantityKg: qty,
-      });
+      const res = await api.post("/bookings", { slotId, cropId, quantityKg: weightNum });
       setConfirmation(res.data.booking);
     } catch (err) {
       setError(getErrorMessage(err));
-      // Availability may have just changed — refresh the grid so the
-      // farmer sees the real current state instead of a stale one.
-      const res = await api.get("/slots", { params: { centreId, date } });
-      setSlots(res.data);
-      setSelectedSlotId(null);
+      const code = errorCode(err);
+      if (code === "SLOT_FULL" || code === "SLOT_GONE") setNotice(t("cap.slotTaken"));
+      // Availability may have just changed. Show the real current state.
+      await fetchRec(true);
     } finally {
       setSubmitting(false);
     }
@@ -143,43 +206,47 @@ export function SlotBooking() {
     );
   }
 
+  const recommended = rec?.slots.find((s) => s.rank === "RECOMMENDED") ?? null;
+  const alternatives = rec?.slots.filter((s) => s.rank === "ALTERNATIVE") ?? [];
+  const notSuitable = rec?.slots.filter((s) => s.rank === "NOT_SUITABLE") ?? [];
+  const showRanked = rec !== null && rec.weightKg !== null;
+
   return (
     <div className="mx-auto max-w-2xl px-4 py-10 sm:px-6">
       <h1 className="font-display text-2xl font-bold text-field sm:text-3xl">{t("booking.title")}</h1>
       <p className="mt-2 text-soil-light">{t("booking.subtitle")}</p>
 
       {error && (
-        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
+        <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
+      )}
+      {notice && (
+        <div className="mt-4 rounded-lg border border-wheat bg-wheat-light/40 px-4 py-3 text-sm font-semibold text-soil">
+          {notice}
         </div>
       )}
 
       <div className="mt-6 grid gap-5 sm:grid-cols-2">
         <div>
-          <label className="field-label" htmlFor="crop">{t("booking.crop")}</label>
-          <select id="crop" className="input-field" value={crop} onChange={(e) => setCrop(e.target.value)}>
-            <option>Wheat</option>
-            <option>Paddy</option>
-            <option>Maize</option>
-            <option>Mustard</option>
-            <option>Sugarcane</option>
-          </select>
-        </div>
-
-        <div>
           <label className="field-label" htmlFor="centre">{t("booking.centre")}</label>
-          <select
-            id="centre"
-            className="input-field"
-            value={centreId}
-            onChange={(e) => setCentreId(e.target.value)}
-          >
+          <select id="centre" className="input-field" value={centreId} onChange={(e) => setCentreId(e.target.value)}>
             {centres.map((c) => (
               <option key={c.id} value={c.id}>
                 {c.name} — {c.district}
               </option>
             ))}
           </select>
+        </div>
+
+        <div>
+          <label className="field-label" htmlFor="crop">{t("booking.crop")}</label>
+          <select id="crop" className="input-field" value={cropId} onChange={(e) => setCropId(e.target.value)}>
+            {crops.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+          {crops.length === 0 && <p className="mt-1 text-xs text-red-600">{t("cap.crop.none")}</p>}
         </div>
 
         <div>
@@ -199,60 +266,141 @@ export function SlotBooking() {
           <input
             id="quantity"
             type="number"
+            inputMode="numeric"
             min={1}
+            step={1}
             className="input-field"
-            value={quantityKg}
-            onChange={(e) => setQuantityKg(e.target.value)}
-            placeholder="e.g. 500"
+            value={weight}
+            onChange={(e) => setWeight(e.target.value)}
+            placeholder={t("cap.weight.placeholder")}
           />
+          {crop && !weightError && (
+            <p className="mt-1 text-xs text-soil-light">
+              {t("cap.weight.hint").replace("{crop}", crop.name).replace("{max}", kg(crop.maxBookingKg))}
+            </p>
+          )}
+          {weightError && <p className="mt-1 text-xs font-semibold text-red-600">{weightError}</p>}
         </div>
       </div>
 
-      <div className="mt-8">
-        <h2 className="font-display text-lg font-semibold text-soil">{t("booking.availableSlots")}</h2>
+      <div className="mt-8" aria-live="polite">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="font-display text-lg font-semibold text-soil">{t("booking.availableSlots")}</h2>
+          <button type="button" className="text-sm font-semibold text-field underline" onClick={() => fetchRec(false)}>
+            {t("cap.refresh")}
+          </button>
+        </div>
 
-        {slotsLoading && <p className="mt-3 text-sm text-soil-light">{t("slots.loading")}</p>}
+        {loading && <p className="mt-3 text-sm text-soil-light">{t("slots.loading")}</p>}
 
-        {!slotsLoading && slots.length === 0 && (
+        {!loading && !weightError && rec && rec.slots.length === 0 && (
           <p className="mt-3 text-sm text-soil-light">{t("slots.none")}</p>
         )}
 
-        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {slots.map((slot) => {
-            const isSelected = selectedSlotId === slot.id;
-            return (
-              <button
-                key={slot.id}
-                disabled={slot.isFull}
-                onClick={() => setSelectedSlotId(slot.id)}
-                className={[
-                  "rounded-xl border-2 p-4 text-left transition",
-                  slot.isFull
-                    ? "cursor-not-allowed border-soil-light/15 bg-soil-light/5 opacity-60"
-                    : isSelected
-                    ? "border-field bg-field/5"
-                    : "border-soil-light/25 bg-white hover:border-field",
-                ].join(" ")}
-              >
-                <p className="font-display font-semibold text-soil">
-                  {slot.startTime}–{slot.endTime}
-                </p>
-                <p className={`mt-1 text-xs font-medium ${slot.isFull ? "text-red-500" : "text-field"}`}>
-                  {slot.isFull ? "FULL" : `Available: ${slot.available}/${slot.capacity}`}
-                </p>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+        {!loading && !weightError && rec && rec.weightKg === null && rec.slots.length > 0 && (
+          <>
+            <p className="mt-3 rounded-lg bg-wheat-light/30 px-3 py-2 text-sm text-soil">{t("cap.enterWeight")}</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {rec.slots.map((s) => (
+                <SlotCapacityCard key={s.slotId} slot={s} weightKg={null} variant="info" />
+              ))}
+            </div>
+          </>
+        )}
 
-      <button
-        className="btn-primary mt-8 w-full"
-        disabled={!selectedSlotId || submitting}
-        onClick={handleBook}
-      >
-        {submitting ? "…" : t("booking.confirm")}
-      </button>
+        {!loading && !weightError && showRanked && rec && (
+          <>
+            {recommended ? (
+              <div className="mt-4">
+                <SlotCapacityCard
+                  slot={recommended}
+                  weightKg={rec.weightKg}
+                  variant="recommended"
+                  busy={submitting}
+                  onBook={() => handleBook(recommended.slotId)}
+                />
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border-2 border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                <p className="font-semibold">
+                  {t("cap.noFit").replace("{kg}", kg(rec.weightKg ?? 0)).replace("{crop}", rec.cropName)}
+                </p>
+                {rec.alternativeDates.length > 0 ? (
+                  <>
+                    <p className="mt-3 font-semibold">{t("cap.tryDates")}</p>
+                    <div className="mt-2 flex flex-col gap-2">
+                      {rec.alternativeDates.map((a) => (
+                        <button
+                          key={a.date}
+                          type="button"
+                          className="btn-secondary w-full text-left"
+                          onClick={() => setDate(a.date)}
+                        >
+                          {t("cap.dateOption")
+                            .replace("{date}", prettyDate(a.date))
+                            .replace("{time}", `${a.slot.startTime}–${a.slot.endTime}`)
+                            .replace("{rem}", kg(a.slot.remainingKg))}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-2">{t("cap.noFitAnywhere")}</p>
+                )}
+              </div>
+            )}
+
+            {alternatives.length > 0 && (
+              <>
+                <h3 className="mt-6 font-display text-base font-semibold text-soil">{t("cap.alternatives")}</h3>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {alternatives.map((s) => (
+                    <SlotCapacityCard
+                      key={s.slotId}
+                      slot={s}
+                      weightKg={rec.weightKg}
+                      variant="alternative"
+                      busy={submitting}
+                      onBook={() => handleBook(s.slotId)}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+
+            {notSuitable.length > 0 && (
+              <details className="mt-6">
+                <summary className="cursor-pointer text-sm font-semibold text-soil-light">
+                  {t("cap.notSuitable")} ({notSuitable.length})
+                </summary>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  {notSuitable.map((s) => (
+                    <SlotCapacityCard key={s.slotId} slot={s} weightKg={rec.weightKg} variant="muted" />
+                  ))}
+                </div>
+              </details>
+            )}
+          </>
+        )}
+
+        {!loading && !weightError && showRanked && rec && rec.weightKg !== null && rec.slots.length > 0 && (
+          <JoinWaitlistBox
+            key={`${centreId}|${cropId}|${date}|${rec.weightKg}`}
+            centreId={centreId}
+            cropId={cropId}
+            cropName={rec.cropName}
+            date={date}
+            weightKg={rec.weightKg}
+            prominent={!recommended}
+          />
+        )}
+
+        {checkedAt && !weightError && (
+          <p className="mt-4 text-xs text-soil-light">
+            {t("cap.checkedAt").replace("{time}", checkedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }))}
+          </p>
+        )}
+      </div>
     </div>
   );
 }

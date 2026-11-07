@@ -13,6 +13,10 @@ import { WeighingModal } from "../components/WeighingModal";
 import { DocumentReviewModal } from "../components/DocumentReviewModal";
 import { TimelineModal } from "../components/TimelineModal";
 import { ScanModal } from "../components/ScanModal";
+import { CapacityPanel } from "../components/CapacityPanel";
+import { EmergencyReviewPanel } from "../components/EmergencyReviewPanel";
+import { QueueControlPanel } from "../components/QueueControlPanel";
+import { WaitlistManagementPanel } from "../components/WaitlistManagementPanel";
 import type { OfficerRole, QueueRow } from "../types";
 
 type Action = "arrive" | "verify" | "quality" | "weigh" | "complete" | "payment";
@@ -261,6 +265,18 @@ export function OfficerDashboard() {
           </table>
         )}
       </div>
+
+      {/* The backend only allows the Procurement Officer (besides admin and manager) to change capacity. */}
+      <CapacityPanel canConfigure={user?.role === "PROCUREMENT_OFFICER"} />
+
+      {/* Only the document officer, manager and admin may review emergency requests (the server enforces it). */}
+      {user?.role === "DOCUMENT_OFFICER" && <EmergencyReviewPanel />}
+
+      {/* Everyone on the desk can see the live outlook; only admin, manager and operator may change centre status. */}
+      <QueueControlPanel canControl={false} />
+
+      {/* The procurement officer manages the waitlist (the server allows it for this role only, besides admin, manager and operator). */}
+      {user?.role === "PROCUREMENT_OFFICER" && <WaitlistManagementPanel canSetWindow={false} />}
 
       {scanning && (
         <ScanModal

@@ -22,6 +22,8 @@ import { getPricePerKg } from "../config/prices";
 import { formatBillReference } from "../utils/billReference";
 import { logAudit } from "./auditService";
 import { notifyFarmer } from "./notificationService";
+import { recordStageChange } from "./queueService";
+import { ProcurementStage } from "@prisma/client";
 
 const SIM_PREFIX = "SIM-";
 const DEMO_NAMES = [
@@ -239,6 +241,9 @@ export async function advanceNextSimulatedStage(
     details: { token: booking.tokenNumber, fromStage, toStage },
   });
 
+  if (toStage !== "SLOT_BOOKED") {
+    await recordStageChange(prisma, { id: booking.id, farmerId: booking.farmerId, tokenNumber: booking.tokenNumber, crop: booking.crop, centreId }, toStage as ProcurementStage);
+  }
   getIO().to(`centre:${centreId}`).emit("stage-updated", { centreId, bookingId: booking.id, stage: toStage });
 
   return { advanced: true, bookingId: booking.id, tokenNumber: booking.tokenNumber, fromStage, toStage };
